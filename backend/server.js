@@ -82,15 +82,27 @@ app.get('/api/status', (req, res) => {
 // ESP32 INGESTION ENDPOINT (Called by ESP32 via HTTPS POST)
 // ============================================================
 app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
-  const { voltage, current, power, pf, energy, cost, isLoadOn, correctionNum } = req.body;
+  const { voltage, current, power, pf, energy, cost, isLoadOn, correctionNum, session } = req.body;
 
   try {
     const corr = parseFloat(correctionNum) || 1.0;
     const adjVoltage = (parseFloat(voltage) || 0) * corr;
     const adjCurrent = (parseFloat(current) || 0) * corr;
     const adjPower = (parseFloat(power) || 0) * corr;
-    const adjEnergy = parseFloat(energy) || 0;
-    const adjCost = parseFloat(cost) || 0;
+    const rawEnergy = parseFloat(energy) || 0;
+
+    // Check tariff calculation rule: new tariff applies strictly to remaining/incremental units, not billed ones
+    const unitPrice = parseFloat(req.device.unit_price) || 8.50;
+    const lockedCost = parseFloat(req.device.locked_billed_cost) || 0;
+    const lockedEnergy = parseFloat(req.device.locked_billed_energy) || 0;
+    const incrementalEnergy = Math.max(0, rawEnergy - lockedEnergy);
+    const adjCost = lockedCost + (incrementalEnergy * unitPrice);
+
+    // Check if admin triggered a meter reset
+    const shouldReset = Boolean(req.device.needs_reset);
+    if (shouldReset) {
+      await db.query('UPDATE devices SET needs_reset = false WHERE id = $1', [req.device.id]);
+    }
 
     // Check if device was previously offline (> 35s or null)
     const wasOffline = !req.device.last_seen || (Date.now() - new Date(req.device.last_seen).getTime() > 35000);
@@ -115,24 +127,50 @@ app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
         adjCurrent,
         adjPower,
         parseFloat(pf) || 0,
-        adjEnergy,
+        rawEnergy,
         adjCost,
         Boolean(isLoadOn)
       ]
     );
 
-    // 2. Update device last_seen timestamp
+    // 2. Track load session if reported
+    if (session && session.startTime) {
+      await db.query(
+        `INSERT INTO load_sessions (device_id, start_time, stop_time, duration_seconds, peak_power, energy_kwh, session_cost)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          req.device.id,
+          session.startTime,
+          session.stopTime || null,
+          parseInt(session.durationSeconds) || 0,
+          parseFloat(session.peakPower) || 0,
+          parseFloat(session.energy) || 0,
+          (parseFloat(session.energy) || 0) * unitPrice
+        ]
+      );
+    }
+
+    // 3. Update device last_seen timestamp
     await db.query(
       'UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1',
       [req.device.id]
     );
 
-    // 3. Return latest cloud device settings so ESP32 can synchronize unit price & allowed units
+    // 4. Return updated cloud settings & recharge balances to ESP32
+    const recharge = parseFloat(req.device.recharge_amount !== null && req.device.recharge_amount !== undefined ? req.device.recharge_amount : (req.device.paid_amount || 1000.0));
+    const rawBalance = recharge - adjCost;
+    const accountBalance = Math.max(0, rawBalance);
+    const totalOverdue = (rawBalance < 0 ? Math.abs(rawBalance) : 0) + parseFloat(req.device.overdue_amount || 0);
+
     res.json({
       success: true,
       deviceId: req.device.id,
-      unitPrice: parseFloat(req.device.unit_price),
-      allowedUnits: parseFloat(req.device.allowed_units),
+      unitPrice: unitPrice,
+      rechargeAmount: recharge,
+      accountBalance: accountBalance,
+      overdueAmount: totalOverdue,
+      totalBilled: adjCost,
+      resetCommand: shouldReset,
       serverTime: new Date().toISOString()
     });
   } catch (err) {
@@ -258,13 +296,24 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
       recorded_at: null
     };
 
-    // Calculate balances
-    const unitPrice = parseFloat(device.unit_price);
-    const allowedUnits = parseFloat(device.allowed_units);
-    const usedEnergy = parseFloat(latest.energy);
-    const unitsLeft = Math.max(0, allowedUnits - usedEnergy);
-    const totalAllowedAmount = allowedUnits * unitPrice;
-    const amountRemaining = Math.max(0, totalAllowedAmount - (usedEnergy * unitPrice));
+    // Calculate balances based on prepaid recharge model
+    const unitPrice = parseFloat(device.unit_price) || 8.50;
+    const rechargeAmount = parseFloat(device.recharge_amount !== null && device.recharge_amount !== undefined ? device.recharge_amount : (device.paid_amount || 1000.0));
+    const usedEnergy = parseFloat(latest.energy) || 0;
+    
+    // Tariff rule: past billed units remain locked at previous rate, new tariff applies strictly to remaining/future units
+    const lockedCost = parseFloat(device.locked_billed_cost || 0);
+    const lockedEnergy = parseFloat(device.locked_billed_energy || 0);
+    const incrementalEnergy = Math.max(0, usedEnergy - lockedEnergy);
+    const billedCost = (lockedCost > 0 || lockedEnergy > 0)
+      ? (lockedCost + (incrementalEnergy * unitPrice))
+      : (parseFloat(latest.cost) || (usedEnergy * unitPrice));
+
+    const rawBalance = rechargeAmount - billedCost;
+    const accountBalance = Math.max(0, rawBalance);
+    const computedOverdue = rawBalance < 0 ? Math.abs(rawBalance) : 0;
+    const totalOverdue = parseFloat(device.overdue_amount || 0) + computedOverdue;
+    const unitsAvailable = unitPrice > 0 ? (accountBalance / unitPrice) : 0;
 
     // Device online status (online if reported within last 25 seconds)
     const isOnline = device.last_seen && (Date.now() - new Date(device.last_seen).getTime() < 25000);
@@ -274,9 +323,11 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
         id: device.id,
         name: device.name,
         unitPrice,
-        allowedUnits,
-        overdueAmount: parseFloat(device.overdue_amount || 0),
+        rechargeAmount,
+        overdueAmount: totalOverdue,
         paidAmount: parseFloat(device.paid_amount || 0),
+        lockedBilledCost: parseFloat(device.locked_billed_cost || 0),
+        lockedBilledEnergy: parseFloat(device.locked_billed_energy || 0),
         lastSeen: device.last_seen,
         lastOnlineAt: device.last_online_at,
         lastOfflineAt: device.last_offline_at,
@@ -284,11 +335,13 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
       },
       live: latest,
       analytics: {
-        unitsLeft,
+        rechargeAmount,
+        billedAmount: billedCost,
+        accountBalance,
+        overdueAmount: totalOverdue,
+        unitsAvailable,
         usedEnergy,
-        totalAllowedAmount,
-        amountRemaining,
-        percentRemaining: allowedUnits > 0 ? (unitsLeft / allowedUnits) * 100 : 0
+        balancePercent: rechargeAmount > 0 ? Math.min(Math.max((accountBalance / rechargeAmount) * 100, 0), 100) : 0
       }
     });
   } catch (err) {
@@ -330,27 +383,171 @@ app.get('/api/meters/:id/history', verifyToken, async (req, res) => {
   }
 });
 
-// Update meter quota/price settings
-app.put('/api/meters/:id/settings', verifyToken, async (req, res) => {
+// Get load sessions history
+app.get('/api/meters/:id/sessions', verifyToken, async (req, res) => {
   const deviceId = req.params.id;
-  const { unitPrice, allowedUnits } = req.body;
+  try {
+    const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
+    if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    if (req.user.role !== 'admin' && devQuery.rows[0].assigned_user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const sessRes = await db.query(
+      `SELECT * FROM load_sessions WHERE device_id = $1 ORDER BY start_time DESC LIMIT 50`,
+      [deviceId]
+    );
+
+    let sessions = sessRes.rows;
+
+    // Fallback/synthesize if no explicit sessions logged yet
+    if (sessions.length === 0) {
+      const telRes = await db.query(
+        `SELECT recorded_at as start_time, power as peak_power, energy as energy_kwh, cost as session_cost
+         FROM telemetry
+         WHERE device_id = $1 AND is_load_on = true
+         ORDER BY recorded_at DESC LIMIT 10`,
+        [deviceId]
+      );
+      sessions = telRes.rows.map((row, idx) => ({
+        id: idx + 1,
+        device_id: deviceId,
+        start_time: row.start_time,
+        stop_time: null,
+        duration_seconds: 3600,
+        peak_power: parseFloat(row.peak_power) || 0,
+        energy_kwh: parseFloat(row.energy_kwh) || 0,
+        session_cost: parseFloat(row.session_cost) || 0
+      }));
+    }
+
+    const totalSessions = sessions.length;
+    const totalSessionUnits = sessions.reduce((acc, s) => acc + (parseFloat(s.energy_kwh) || 0), 0);
+    const totalSessionCost = sessions.reduce((acc, s) => acc + (parseFloat(s.session_cost) || 0), 0);
+
+    res.json({
+      sessions,
+      summary: {
+        totalSessions,
+        totalSessionUnits: parseFloat(totalSessionUnits.toFixed(3)),
+        totalSessionCost: parseFloat(totalSessionCost.toFixed(2))
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching sessions:', err);
+    res.status(500).json({ error: 'Failed to retrieve load sessions' });
+  }
+});
+
+// Get monthly consumption & dues history
+app.get('/api/meters/:id/monthly', verifyToken, async (req, res) => {
+  const deviceId = req.params.id;
+  try {
+    const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
+    if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    if (req.user.role !== 'admin' && devQuery.rows[0].assigned_user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const device = devQuery.rows[0];
+
+    const monthlyRes = await db.query(
+      `SELECT 
+         TO_CHAR(recorded_at, 'YYYY-MM') as month_key,
+         TO_CHAR(recorded_at, 'FMMonth YYYY') as month_label,
+         ROUND(COALESCE(MAX(energy) - MIN(energy), MAX(energy), 0)::numeric, 3) as units_kwh,
+         ROUND(COALESCE(MAX(cost) - MIN(cost), MAX(cost), 0)::numeric, 2) as billed_amount
+       FROM telemetry
+       WHERE device_id = $1
+       GROUP BY TO_CHAR(recorded_at, 'YYYY-MM'), TO_CHAR(recorded_at, 'FMMonth YYYY')
+       ORDER BY month_key DESC
+       LIMIT 12`,
+      [deviceId]
+    );
+
+    let months = monthlyRes.rows;
+    if (months.length === 0) {
+      const now = new Date();
+      const currentMonthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      const currentMonthKey = now.toISOString().slice(0, 7);
+      months = [{
+        month_key: currentMonthKey,
+        month_label: currentMonthLabel,
+        units_kwh: 0,
+        billed_amount: 0,
+        recharged_amount: parseFloat(device.recharge_amount || 1000.0),
+        overdue_amount: parseFloat(device.overdue_amount || 0),
+        status: parseFloat(device.overdue_amount || 0) > 0 ? 'DUE' : 'ACTIVE'
+      }];
+    } else {
+      months = months.map((m, idx) => ({
+        ...m,
+        recharged_amount: idx === 0 ? parseFloat(device.recharge_amount || 0) : 0,
+        overdue_amount: idx === 0 ? parseFloat(device.overdue_amount || 0) : 0,
+        status: (idx === 0 && parseFloat(device.overdue_amount || 0) > 0) ? 'DUE' : 'SETTLED'
+      }));
+    }
+
+    res.json({ months });
+  } catch (err) {
+    console.error('Error fetching monthly breakdown:', err);
+    res.status(500).json({ error: 'Failed to retrieve monthly breakdown' });
+  }
+});
+
+// Update meter quota/price settings (Admin Only)
+app.put('/api/meters/:id/settings', verifyToken, requireAdmin, async (req, res) => {
+  const deviceId = req.params.id;
+  const { unitPrice, rechargeAmount, overdueAmount, billedAmount } = req.body;
 
   try {
     const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
     if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
 
-    const device = devQuery.rows[0];
-    if (req.user.role !== 'admin' && device.assigned_user_id !== req.user.id) {
-      return res.status(403).json({ error: 'Unauthorized' });
+    const currentDevice = devQuery.rows[0];
+    const newPrice = unitPrice ? parseFloat(unitPrice) : parseFloat(currentDevice.unit_price);
+    const newRecharge = rechargeAmount !== undefined ? parseFloat(rechargeAmount) : parseFloat(currentDevice.recharge_amount || 1000.0);
+    const newOverdue = overdueAmount !== undefined ? parseFloat(overdueAmount) : parseFloat(currentDevice.overdue_amount || 0);
+
+    // Fetch latest telemetry point to know current usage
+    const latestTel = await db.query('SELECT energy, cost FROM telemetry WHERE device_id = $1 ORDER BY recorded_at DESC LIMIT 1', [deviceId]);
+    const currentEnergy = latestTel.rows.length > 0 ? parseFloat(latestTel.rows[0].energy || 0) : 0;
+    const currentCost = latestTel.rows.length > 0 ? parseFloat(latestTel.rows[0].cost || 0) : 0;
+
+    // Tariff rule: when tariff changes or billedAmount is declared, freeze past billed usage at previous rate
+    let lockedCost = parseFloat(currentDevice.locked_billed_cost || 0);
+    let lockedEnergy = parseFloat(currentDevice.locked_billed_energy || 0);
+
+    if (billedAmount !== undefined && billedAmount !== null && billedAmount !== '') {
+      lockedCost = parseFloat(billedAmount);
+      lockedEnergy = currentEnergy;
+    } else if (newPrice !== parseFloat(currentDevice.unit_price)) {
+      lockedCost = currentCost;
+      lockedEnergy = currentEnergy;
     }
 
     const updated = await db.query(
       `UPDATE devices
-       SET unit_price = COALESCE($1, unit_price),
-           allowed_units = COALESCE($2, allowed_units)
-       WHERE id = $3
+       SET unit_price = $1,
+           recharge_amount = $2,
+           overdue_amount = $3,
+           locked_billed_cost = $4,
+           locked_billed_energy = $5
+       WHERE id = $6
        RETURNING *`,
-      [unitPrice ? parseFloat(unitPrice) : null, allowedUnits ? parseFloat(allowedUnits) : null, deviceId]
+      [newPrice, newRecharge, newOverdue, lockedCost, lockedEnergy, deviceId]
+    );
+
+    await db.query(
+      `INSERT INTO billing_records (device_id, overdue_amount, paid_amount, unit_price_applied, notes)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        deviceId,
+        newOverdue,
+        newRecharge,
+        newPrice,
+        `Admin tariff update: ₹${newPrice}/kWh (applies to subsequent units only). Locked billed: ${lockedEnergy} kWh / ₹${lockedCost}`
+      ]
     );
 
     res.json({ success: true, device: updated.rows[0] });
@@ -594,10 +791,10 @@ app.get('/api/admin/meters/:id/details', verifyToken, requireAdmin, async (req, 
   }
 });
 
-// Assign Overdue / Paid Amounts & Update Tariff Unit Price for next orders (Admin)
+// Assign Overdue / Paid / Recharge Amounts & Update Tariff Unit Price for future units (Admin)
 app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, res) => {
   const deviceId = req.params.id;
-  const { overdueAmount, paidAmount, unitPrice, notes } = req.body;
+  const { overdueAmount, paidAmount, rechargeAmount, unitPrice, billedAmount, notes } = req.body;
 
   try {
     const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
@@ -608,9 +805,27 @@ app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, 
     const currentDevice = devQuery.rows[0];
     const newOverdue = overdueAmount !== undefined ? parseFloat(overdueAmount) : parseFloat(currentDevice.overdue_amount || 0);
     const newPaid = paidAmount !== undefined ? parseFloat(paidAmount) : parseFloat(currentDevice.paid_amount || 0);
+    const newRecharge = rechargeAmount !== undefined ? parseFloat(rechargeAmount) : parseFloat(currentDevice.recharge_amount || 1000.0);
     const newUnitPrice = unitPrice !== undefined ? parseFloat(unitPrice) : parseFloat(currentDevice.unit_price);
 
-    // 1. Record billing audit record with timestamp (records when tariff / overdue / paid was assigned)
+    // Fetch latest telemetry point to know current usage
+    const latestTel = await db.query('SELECT energy, cost FROM telemetry WHERE device_id = $1 ORDER BY recorded_at DESC LIMIT 1', [deviceId]);
+    const currentEnergy = latestTel.rows.length > 0 ? parseFloat(latestTel.rows[0].energy || 0) : 0;
+    const currentCost = latestTel.rows.length > 0 ? parseFloat(latestTel.rows[0].cost || 0) : 0;
+
+    // Tariff rule: when tariff changes or billedAmount is declared, freeze past billed usage at previous rate
+    let lockedCost = parseFloat(currentDevice.locked_billed_cost || 0);
+    let lockedEnergy = parseFloat(currentDevice.locked_billed_energy || 0);
+
+    if (billedAmount !== undefined && billedAmount !== null && billedAmount !== '') {
+      lockedCost = parseFloat(billedAmount);
+      lockedEnergy = currentEnergy;
+    } else if (newUnitPrice !== parseFloat(currentDevice.unit_price)) {
+      lockedCost = currentCost;
+      lockedEnergy = currentEnergy;
+    }
+
+    // 1. Record billing audit record with timestamp
     const billingLogRes = await db.query(
       `INSERT INTO billing_records (device_id, overdue_amount, paid_amount, unit_price_applied, notes)
        VALUES ($1, $2, $3, $4, $5)
@@ -618,9 +833,9 @@ app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, 
       [
         deviceId,
         newOverdue,
-        newPaid,
+        newRecharge,
         newUnitPrice,
-        notes || 'Tariff/Balance assigned by Administrator (applies to subsequent orders)'
+        notes || `Admin update: Unit Price ₹${newUnitPrice}/kWh (locked past billed usage: ₹${lockedCost}). Recharge balance ₹${newRecharge}.`
       ]
     );
 
@@ -629,15 +844,18 @@ app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, 
       `UPDATE devices
        SET overdue_amount = $1,
            paid_amount = $2,
-           unit_price = $3
-       WHERE id = $4
+           recharge_amount = $3,
+           unit_price = $4,
+           locked_billed_cost = $5,
+           locked_billed_energy = $6
+       WHERE id = $7
        RETURNING *`,
-      [newOverdue, newPaid, newUnitPrice, deviceId]
+      [newOverdue, newPaid, newRecharge, newUnitPrice, lockedCost, lockedEnergy, deviceId]
     );
 
     res.json({
       success: true,
-      message: 'Billing parameters and new unit price successfully applied for next orders.',
+      message: 'Billing parameters and new tariff unit price successfully applied for future units.',
       device: updateRes.rows[0],
       record: billingLogRes.rows[0]
     });
@@ -647,17 +865,62 @@ app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, 
   }
 });
 
+// Erase and Reset All Data for a meter (Admin Only)
+app.post('/api/admin/meters/:id/reset-all', verifyToken, requireAdmin, async (req, res) => {
+  const deviceId = req.params.id;
+  try {
+    const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
+    if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+
+    // 1. Delete all historical telemetry for this device
+    await db.query('DELETE FROM telemetry WHERE device_id = $1', [deviceId]);
+
+    // 2. Delete all load sessions for this device
+    await db.query('DELETE FROM load_sessions WHERE device_id = $1', [deviceId]);
+
+    // 3. Reset device counters and set needs_reset = true so ESP32 clears local preferences
+    const updated = await db.query(
+      `UPDATE devices
+       SET locked_billed_cost = 0,
+           locked_billed_energy = 0,
+           overdue_amount = 0,
+           paid_amount = 0,
+           needs_reset = true
+       WHERE id = $1
+       RETURNING *`,
+      [deviceId]
+    );
+
+    // 4. Log audit entry
+    await db.query(
+      `INSERT INTO billing_records (device_id, overdue_amount, paid_amount, unit_price_applied, notes)
+       VALUES ($1, 0, 0, $2, 'ADMIN COMPLETE METER WIPE: All historical telemetry & billing reset to zero.')`,
+      [deviceId, parseFloat(updated.rows[0].unit_price)]
+    );
+
+    res.json({
+      success: true,
+      message: 'All historical telemetry and session records erased for this meter. The ESP32 will reset its counters on next sync.',
+      device: updated.rows[0]
+    });
+  } catch (err) {
+    console.error('Reset all error:', err);
+    res.status(500).json({ error: 'Failed to reset meter data' });
+  }
+});
+
 // Register new device
 app.post('/api/admin/devices', verifyToken, requireAdmin, async (req, res) => {
-  const { id, name, apiKey, assignedUserId, unitPrice, allowedUnits } = req.body;
+  const { id, name, apiKey, assignedUserId, unitPrice, rechargeAmount, allowedUnits } = req.body;
   if (!id || !apiKey) {
     return res.status(400).json({ error: 'Device ID and API Key are required' });
   }
 
   try {
+    const initialRecharge = rechargeAmount !== undefined ? parseFloat(rechargeAmount) : (allowedUnits ? parseFloat(allowedUnits) * 8.5 : 1000.0);
     const result = await db.query(
-      `INSERT INTO devices (id, name, api_key, assigned_user_id, unit_price, allowed_units)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO devices (id, name, api_key, assigned_user_id, unit_price, recharge_amount, allowed_units)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         id.trim(),
@@ -665,6 +928,7 @@ app.post('/api/admin/devices', verifyToken, requireAdmin, async (req, res) => {
         apiKey.trim(),
         assignedUserId ? parseInt(assignedUserId) : null,
         unitPrice ? parseFloat(unitPrice) : 8.50,
+        initialRecharge,
         allowedUnits ? parseFloat(allowedUnits) : 100.00
       ]
     );

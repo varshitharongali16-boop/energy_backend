@@ -76,9 +76,25 @@ async function initDatabase() {
         timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS load_sessions (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+        start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+        stop_time TIMESTAMP WITH TIME ZONE,
+        duration_seconds INTEGER DEFAULT 0,
+        peak_power NUMERIC(8,2) DEFAULT 0.00,
+        energy_kwh NUMERIC(10,4) DEFAULT 0.00,
+        session_cost NUMERIC(10,2) DEFAULT 0.00,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
       -- Auto-migrations for existing tables
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS overdue_amount NUMERIC(10,2) DEFAULT 0.00;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10,2) DEFAULT 0.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS recharge_amount NUMERIC(10,2) DEFAULT 1000.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS locked_billed_cost NUMERIC(10,2) DEFAULT 0.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS locked_billed_energy NUMERIC(12,4) DEFAULT 0.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS needs_reset BOOLEAN DEFAULT false;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_online_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_offline_at TIMESTAMP WITH TIME ZONE;
 
@@ -86,6 +102,7 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
       CREATE INDEX IF NOT EXISTS idx_billing_device ON billing_records(device_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_status_logs_device ON device_status_logs(device_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_load_sessions_device ON load_sessions(device_id, start_time DESC);
     `);
 
     // 2. Check if default Admin exists; if not, create one

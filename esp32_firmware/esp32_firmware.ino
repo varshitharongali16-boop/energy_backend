@@ -17,7 +17,6 @@ TFT_eSPI tft = TFT_eSPI();
 // ============================================================
 // WIFI CONFIGURATION
 // ============================================================
-// Enter your local Wi-Fi network SSID and Password
 const char* WIFI_SSID = "Nothing Phone (3a)_2505";
 const char* WIFI_PASS = "praveen DSP";
 
@@ -31,19 +30,15 @@ unsigned long lastWiFiAttempt = 0;
 // CLOUD BACKEND (RENDER) CONFIGURATION
 // ============================================================
 // Telemetry is synchronized to your Render cloud service.
-// Tariff unit price, quota, and reset commands are managed centrally by the Admin on the website.
+// Tariff unit price, recharges, and reset commands are managed centrally by the Admin on the website.
 const char* CLOUD_API_URL  = "https://energy-backend-gwex.onrender.com/api/device/telemetry";
 const char* DEVICE_ID      = "ESP32_METER_01";
 const char* DEVICE_API_KEY = "meter_secret_key_123";
 
 // CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
-// If external digital multimeter reads 230.0V and raw PZEM reads 225.0V:
-// CORRECTION_NUM = 230.0 / 225.0 = 1.0222
 float CORRECTION_NUM = 1.000;
 
-// Transmission Interval to Render Cloud
-// Set to true for HOURLY sync (1 request every 60 mins = 3600000ms) to save data & bandwidth
-// Set to false for FAST sync (every 15 seconds) for live demo/testing
+// Hourly Cloud Sync Mode (Sends 1 request every hour = 3600000ms)
 #define HOURLY_SYNC_MODE true
 const unsigned long CLOUD_SYNC_INTERVAL = HOURLY_SYNC_MODE ? 3600000UL : 15000UL;
 unsigned long lastCloudSync = 0;
@@ -61,18 +56,20 @@ PZEM004Tv30 pzem(Serial2, PZEM_RX, PZEM_TX);
 Preferences prefs;
 
 // ============================================================
-// ENERGY VARIABLES & SETTINGS
+// PREPAID RECHARGE & ENERGY TARIFF
 // Controlled centrally by Cloud Admin
 // ============================================================
-float unitPrice     = 8.50;   // In ₹ / kWh
-float allowedUnits  = 100.0;  // Allowed quota in kWh
-float initialEnergy = 0.0;
+float unitPrice      = 8.50;    // In ₹ / kWh
+float rechargeAmount = 1000.0;  // Prepaid funds credited (₹)
+float initialEnergy  = 0.0;
 
-float energy        = 0.0;
-float usedEnergy    = 0.0;
-float totalCost     = 0.0;
-float totalAllowedAmount = 0.0;
-float amountRemaining    = 0.0;
+float energy         = 0.0;
+float usedEnergy     = 0.0;
+float totalCost      = 0.0;     // Total billed (₹)
+float accountBalance = 1000.0;  // Available balance (₹)
+float unitsAvailable = 0.0;     // kWh units purchasable from balance
+float lockedBilledCost   = 0.0; // Billed usage locked at previous tariff (₹)
+float lockedBilledEnergy = 0.0; // Energy reading when tariff was locked (kWh)
 
 // Live Readings from PZEM
 float voltage     = 0.0;
@@ -81,7 +78,7 @@ float power       = 0.0;
 float powerFactor = 0.0;
 
 // ============================================================
-// LOAD SENSING & TIMESTAMPS
+// LOAD SENSING & SESSIONS BREAKDOWN
 // ============================================================
 #define LOAD_ON_THRESHOLD  5.0
 #define LOAD_OFF_THRESHOLD 3.0
@@ -91,6 +88,21 @@ bool previousLoadON = false;
 String loadStartTime = "--:--:--";
 String loadStopTime  = "--:--:--";
 unsigned long loadStartMillis = 0;
+
+// Circular buffer for load sessions
+struct LoadSession {
+  String startTime;
+  String stopTime;
+  unsigned long durationSec;
+  float peakPower;
+  float energyKWh;
+  float sessionCost;
+};
+#define MAX_SESSIONS 8
+LoadSession sessionHistory[MAX_SESSIONS];
+int sessionCount = 0;
+float sessionStartEnergy = 0.0;
+float sessionPeakPower = 0.0;
 
 // ============================================================
 // TFT SCREEN ROTATION & TIMERS
@@ -160,10 +172,21 @@ void calculateValues() {
   usedEnergy = energy - initialEnergy;
   if (usedEnergy < 0) usedEnergy = 0;
 
-  totalCost = usedEnergy * unitPrice;
-  totalAllowedAmount = allowedUnits * unitPrice;
-  amountRemaining = totalAllowedAmount - totalCost;
-  if (amountRemaining < 0) amountRemaining = 0;
+  // Tariff rule: locked cost for past units, new tariff for remaining/future units
+  float incrementalEnergy = usedEnergy - lockedBilledEnergy;
+  if (incrementalEnergy < 0) incrementalEnergy = 0;
+  totalCost = lockedBilledCost + (incrementalEnergy * unitPrice);
+
+  float rawBalance = rechargeAmount - totalCost;
+  if (rawBalance >= 0) {
+    accountBalance = rawBalance;
+    overdueAmount = 0.0;
+  } else {
+    accountBalance = 0.0;
+    overdueAmount = fabs(rawBalance);
+  }
+
+  unitsAvailable = unitPrice > 0 ? (accountBalance / unitPrice) : 0;
 }
 
 // ============================================================
@@ -188,19 +211,41 @@ void readPZEM() {
   previousLoadON = loadON;
   if (loadON) {
     if (power <= LOAD_OFF_THRESHOLD) loadON = false;
+    if (power > sessionPeakPower) sessionPeakPower = power;
   } else {
     if (power >= LOAD_ON_THRESHOLD) loadON = true;
   }
 
+  // Load Session Started
   if (loadON && !previousLoadON) {
     loadStartMillis = millis();
     loadStartTime = getCurrentTime();
-    Serial.println("[PZEM] Load Started at: " + loadStartTime);
+    sessionStartEnergy = energy;
+    sessionPeakPower = power;
+    Serial.println("[PZEM] Load Session Started at: " + loadStartTime);
   }
 
+  // Load Session Stopped
   if (!loadON && previousLoadON) {
     loadStopTime = getCurrentTime();
-    Serial.println("[PZEM] Load Stopped at: " + loadStopTime);
+    unsigned long durSec = (millis() - loadStartMillis) / 1000;
+    float sessEnergy = energy - sessionStartEnergy;
+    if (sessEnergy < 0) sessEnergy = 0;
+    float sessCost = sessEnergy * unitPrice;
+
+    // Push into circular buffer
+    for (int i = MAX_SESSIONS - 1; i > 0; i--) {
+      sessionHistory[i] = sessionHistory[i - 1];
+    }
+    sessionHistory[0].startTime = loadStartTime;
+    sessionHistory[0].stopTime = loadStopTime;
+    sessionHistory[0].durationSec = durSec;
+    sessionHistory[0].peakPower = sessionPeakPower;
+    sessionHistory[0].energyKWh = sessEnergy;
+    sessionHistory[0].sessionCost = sessCost;
+    if (sessionCount < MAX_SESSIONS) sessionCount++;
+
+    Serial.printf("[PZEM] Load Stopped. Duration: %lus, Energy: %.3fkWh, Cost: Rs %.2f\n", durSec, sessEnergy, sessCost);
   }
 }
 
@@ -233,12 +278,53 @@ void sendTelemetryToCloud() {
     payload += "\"cost\":" + String(totalCost, 2) + ",";
     payload += "\"isLoadOn\":" + String(loadON ? "true" : "false") + ",";
     payload += "\"correctionNum\":" + String(CORRECTION_NUM, 4);
+
+    // If a session just ended, attach it
+    if (sessionCount > 0 && !loadON) {
+      payload += ",\"session\":{";
+      payload += "\"startTime\":\"" + sessionHistory[0].startTime + "\",";
+      payload += "\"stopTime\":\"" + sessionHistory[0].stopTime + "\",";
+      payload += "\"durationSeconds\":" + String(sessionHistory[0].durationSec) + ",";
+      payload += "\"peakPower\":" + String(sessionHistory[0].peakPower, 1) + ",";
+      payload += "\"energy\":" + String(sessionHistory[0].energyKWh, 4);
+      payload += "}";
+    }
+
     payload += "}";
 
     int httpCode = http.POST(payload);
     if (httpCode == HTTP_CODE_OK) {
       String response = http.getString();
       Serial.println("[Cloud] Synchronized successfully with Render backend.");
+
+      // Check if admin triggered a complete data wipe / reset
+      if (response.indexOf("\"resetCommand\":true") != -1) {
+        Serial.println("[Cloud] Admin WIPE command received! Resetting local meter data...");
+        initialEnergy = energy;
+        usedEnergy = 0;
+        totalCost = 0;
+        lockedBilledCost = 0;
+        lockedBilledEnergy = 0;
+        sessionCount = 0;
+        prefs.putFloat("initial", initialEnergy);
+        prefs.putFloat("used", 0);
+        prefs.putFloat("cost", 0);
+        prefs.putFloat("lockCost", 0);
+        prefs.putFloat("lockEnergy", 0);
+        calculateValues();
+      }
+
+      // Sync recharge amount set by Admin on website
+      int rechargeIdx = response.indexOf("\"rechargeAmount\":");
+      if (rechargeIdx != -1) {
+        float cloudRecharge = response.substring(rechargeIdx + 17).toFloat();
+        if (cloudRecharge >= 0 && cloudRecharge != rechargeAmount) {
+          rechargeAmount = cloudRecharge;
+          prefs.putFloat("recharge", rechargeAmount);
+          calculateValues();
+          Serial.printf("[Cloud] Admin credited Recharge Balance: Rs %.2f\n", rechargeAmount);
+        }
+      }
 
       // Sync official tariff price set by Admin on website
       int priceIdx = response.indexOf("\"unitPrice\":");
@@ -248,19 +334,38 @@ void sendTelemetryToCloud() {
           unitPrice = cloudPrice;
           prefs.putFloat("price", unitPrice);
           calculateValues();
-          Serial.printf("[Cloud] Admin updated Tariff Unit Price: ₹%.2f/kWh\n", unitPrice);
+          Serial.printf("[Cloud] Admin updated Tariff Unit Price: Rs %.2f/kWh\n", unitPrice);
         }
       }
 
-      // Sync allowed quota units set by Admin on website
-      int unitsIdx = response.indexOf("\"allowedUnits\":");
-      if (unitsIdx != -1) {
-        float cloudUnits = response.substring(unitsIdx + 15).toFloat();
-        if (cloudUnits > 0 && cloudUnits != allowedUnits) {
-          allowedUnits = cloudUnits;
-          prefs.putFloat("allowed", allowedUnits);
+      // Sync totalBilled (locked billed usage) from Cloud
+      int billedIdx = response.indexOf("\"totalBilled\":");
+      if (billedIdx != -1) {
+        float cloudBilled = response.substring(billedIdx + 14).toFloat();
+        if (cloudBilled >= 0) {
+          lockedBilledCost = cloudBilled;
+          lockedBilledEnergy = usedEnergy;
+          prefs.putFloat("lockCost", lockedBilledCost);
+          prefs.putFloat("lockEnergy", lockedBilledEnergy);
           calculateValues();
-          Serial.printf("[Cloud] Admin updated Allowed Quota: %.1f kWh\n", allowedUnits);
+        }
+      }
+
+      // Sync account balance from Cloud
+      int balIdx = response.indexOf("\"accountBalance\":");
+      if (balIdx != -1) {
+        float cloudBal = response.substring(balIdx + 17).toFloat();
+        if (cloudBal >= 0) {
+          accountBalance = cloudBal;
+        }
+      }
+
+      // Sync overdue amount from Cloud
+      int dueIdx = response.indexOf("\"overdueAmount\":");
+      if (dueIdx != -1) {
+        float cloudDue = response.substring(dueIdx + 16).toFloat();
+        if (cloudDue >= 0) {
+          overdueAmount = cloudDue;
         }
       }
     } else {
@@ -328,7 +433,7 @@ void drawScreenLive() {
   tft.setTextSize(2);
   tft.setTextColor(loadON ? GREEN : LIGHTGRAY, loadON ? DARKGREEN : DARKGRAY);
   tft.setCursor(22, 54);
-  tft.print(loadON ? "●  LOAD ON" : "●  LOAD OFF");
+  tft.print(loadON ? "●  LOAD ON" : "●  STANDBY");
 
   drawCard(10, 87, 145, 58, "VOLTAGE", loadON ? String(voltage, 1) : "0.0", "V", NAVY, YELLOW);
   drawCard(165, 87, 145, 58, "CURRENT", loadON ? String(current, 2) : "0.00", "A", NAVY, CYAN);
@@ -355,44 +460,45 @@ void drawScreenEnergy() {
   drawCard(10, 48, 145, 60, "ENERGY USED", String(usedEnergy, 3), "kWh", NAVY, CYAN);
   drawCard(165, 48, 145, 60, "UNITS USED", String(usedEnergy, 3), "units", NAVY, YELLOW);
 
-  float unitsLeft = allowedUnits - usedEnergy;
-  if (unitsLeft < 0) unitsLeft = 0;
-
-  drawCard(10, 120, 145, 60, "UNITS LEFT", String(unitsLeft, 3), "units", DARKGREEN, GREEN);
+  drawCard(10, 120, 145, 60, "AVAILABLE UNITS", String(unitsAvailable, 2), "kWh", DARKGREEN, GREEN);
   drawCard(165, 120, 145, 60, "UNIT PRICE", "Rs " + String(unitPrice, 2), "", DARKGRAY, ORANGE);
 
   tft.setTextColor(LIGHTGRAY, BLACK);
   tft.setTextSize(1);
   tft.setCursor(10, 192);
-  tft.print("ENERGY LIMIT");
+  tft.print("RECHARGE BALANCE PROGRESS");
 
-  float percentage = (allowedUnits > 0) ? (usedEnergy / allowedUnits) * 100.0 : 0;
+  float percentage = rechargeAmount > 0 ? (accountBalance / rechargeAmount) * 100.0 : 0;
   if (percentage > 100) percentage = 100;
+  if (percentage < 0) percentage = 0;
 
   tft.fillRoundRect(10, 208, 300, 15, 5, DARKGRAY);
   int barWidth = (int)(300.0 * percentage / 100.0);
-  if (barWidth > 0) tft.fillRoundRect(10, 208, barWidth, 15, 5, GREEN);
+  if (barWidth > 0) tft.fillRoundRect(10, 208, barWidth, 15, 5, percentage < 20 ? RED : GREEN);
 }
 
 void drawScreenMoney() {
   tft.fillScreen(BLACK);
   drawHeader("MONEY STATUS", ORANGE);
 
+  // Available Balance
   tft.fillRoundRect(10, 48, 300, 62, 10, NAVY);
   tft.setTextColor(LIGHTGRAY, NAVY);
   tft.setTextSize(1);
   tft.setCursor(20, 57);
-  tft.print("TOTAL AMOUNT USED");
+  tft.print("AVAILABLE BALANCE");
 
-  tft.setTextColor(ORANGE, NAVY);
+  tft.setTextColor(accountBalance > 0 ? GREEN : RED, NAVY);
   tft.setTextSize(3);
   tft.setCursor(20, 76);
   tft.print("Rs ");
-  tft.print(totalCost, 2);
+  tft.print(accountBalance, 2);
 
-  drawCard(10, 120, 145, 52, "ALLOWED", "Rs " + String(totalAllowedAmount, 2), "", DARKGRAY, WHITE);
-  drawCard(165, 120, 145, 52, "BALANCE", "Rs " + String(amountRemaining, 2), "", DARKGREEN, GREEN);
+  // Recharge & Billed
+  drawCard(10, 120, 145, 52, "RECHARGED", "Rs " + String(rechargeAmount, 2), "", DARKGRAY, WHITE);
+  drawCard(165, 120, 145, 52, "TOTAL BILLED", "Rs " + String(totalCost, 2), "", DARKGREEN, ORANGE);
 
+  // Unit price and Overdue
   tft.setTextColor(LIGHTGRAY, BLACK);
   tft.setTextSize(1);
   tft.setCursor(10, 190);
@@ -404,12 +510,18 @@ void drawScreenMoney() {
   tft.print("Rs ");
   tft.print(unitPrice, 2);
 
-  float balancePercent = (totalAllowedAmount > 0) ? (amountRemaining / totalAllowedAmount) * 100.0 : 0;
-  tft.setTextColor(balancePercent < 20 ? RED : GREEN, BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(190, 207);
-  tft.print(balancePercent, 0);
-  tft.print("% LEFT");
+  if (overdueAmount > 0) {
+    tft.setTextColor(RED, BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(170, 207);
+    tft.print("DUE: Rs ");
+    tft.print(overdueAmount, 0);
+  } else {
+    tft.setTextColor(GREEN, BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(190, 207);
+    tft.print("ACTIVE OK");
+  }
 }
 
 void drawScreenTime() {
@@ -424,35 +536,33 @@ void drawScreenTime() {
   tft.setTextColor(loadON ? GREEN : GRAY, BLACK);
   tft.setTextSize(2);
   tft.setCursor(35, 200);
-  tft.print(loadON ? "LOAD IS RUNNING" : "LOAD IS STOPPED");
+  tft.print(loadON ? "LOAD IS RUNNING" : "LOAD IS STANDBY");
 }
 
 void drawScreenSummary() {
   tft.fillScreen(BLACK);
   drawHeader("ACCOUNT SUMMARY", PURPLE);
 
-  drawCard(10, 48, 145, 52, "ALLOWED UNITS", String(allowedUnits, 2), "kWh", NAVY, WHITE);
-  drawCard(165, 48, 145, 52, "USED UNITS", String(usedEnergy, 2), "kWh", NAVY, YELLOW);
+  drawCard(10, 48, 145, 52, "RECHARGED", "Rs " + String(rechargeAmount, 2), "", NAVY, WHITE);
+  drawCard(165, 48, 145, 52, "TOTAL BILLED", "Rs " + String(totalCost, 2), "", NAVY, YELLOW);
 
-  float unitsLeft = allowedUnits - usedEnergy;
-  if (unitsLeft < 0) unitsLeft = 0;
+  drawCard(10, 112, 145, 52, "UNITS USED", String(usedEnergy, 2) + " kWh", "", DARKGREEN, CYAN);
+  drawCard(165, 112, 145, 52, "UNITS LEFT", String(unitsAvailable, 2) + " kWh", "", NAVY, GREEN);
 
-  drawCard(10, 112, 145, 52, "REMAINING", String(unitsLeft, 2), "kWh", DARKGREEN, GREEN);
-  drawCard(165, 112, 145, 52, "TOTAL COST", "Rs " + String(totalCost, 2), "", NAVY, ORANGE);
-
-  tft.fillRoundRect(10, 178, 300, 45, 8, amountRemaining > 0 ? DARKGREEN : RED);
-  tft.setTextColor(WHITE, amountRemaining > 0 ? DARKGREEN : RED);
+  // Balance
+  tft.fillRoundRect(10, 178, 300, 45, 8, overdueAmount > 0 ? RED : DARKGREEN);
+  tft.setTextColor(WHITE, overdueAmount > 0 ? RED : DARKGREEN);
   tft.setTextSize(1);
   tft.setCursor(20, 185);
-  tft.print("AMOUNT BALANCE");
+  tft.print(overdueAmount > 0 ? "OUTSTANDING DUE" : "ACCOUNT BALANCE");
 
   tft.setTextSize(2);
   tft.setCursor(20, 199);
   tft.print("Rs ");
-  tft.print(amountRemaining, 2);
+  tft.print(overdueAmount > 0 ? overdueAmount : accountBalance, 2);
 
   tft.setCursor(210, 199);
-  tft.print(amountRemaining > 0 ? "AVAILABLE" : "DUE");
+  tft.print(overdueAmount > 0 ? "DUE" : "AVAILABLE");
 }
 
 void drawCurrentScreen() {
@@ -593,24 +703,21 @@ void checkWiFi() {
 }
 
 // ============================================================
-// REST API (FOR LOCAL LIVE READINGS)
+// REST API (FOR LOCAL LIVE READINGS & SESSIONS)
 // ============================================================
 void handleAPI() {
-  float unitsLeft = allowedUnits - usedEnergy;
-  if (unitsLeft < 0) unitsLeft = 0;
-
   String json = "{";
   json += "\"voltage\":" + String(loadON ? voltage : 0, 2);
   json += ",\"current\":" + String(loadON ? current : 0, 3);
   json += ",\"power\":" + String(loadON ? power : 0, 2);
-  json += ",\"pf\":" + String(loadON ? powerFactor : 2);
+  json += ",\"pf\":" + String(loadON ? powerFactor : 0, 2);
   json += ",\"energy\":" + String(usedEnergy, 3);
-  json += ",\"unitsLeft\":" + String(unitsLeft, 3);
-  json += ",\"cost\":" + String(totalCost, 2);
-  json += ",\"price\":" + String(unitPrice, 2);
-  json += ",\"allowedUnits\":" + String(allowedUnits, 3);
-  json += ",\"allowedAmount\":" + String(totalAllowedAmount, 2);
-  json += ",\"amountRemaining\":" + String(amountRemaining, 2);
+  json += ",\"unitPrice\":" + String(unitPrice, 2);
+  json += ",\"rechargeAmount\":" + String(rechargeAmount, 2);
+  json += ",\"accountBalance\":" + String(accountBalance, 2);
+  json += ",\"billedAmount\":" + String(totalCost, 2);
+  json += ",\"overdueAmount\":" + String(overdueAmount, 2);
+  json += ",\"unitsAvailable\":" + String(unitsAvailable, 3);
   json += ",\"load\":" + String(loadON ? "true" : "false");
   json += ",\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
   json += ",\"startTime\":\"" + loadStartTime + "\"";
@@ -618,14 +725,30 @@ void handleAPI() {
   json += ",\"currentTime\":\"" + getCurrentTime() + "\"";
   json += ",\"runningTime\":\"" + getRunningTime() + "\"";
   json += ",\"correctionNum\":" + String(CORRECTION_NUM, 4);
-  json += "}";
 
+  // Sessions array
+  json += ",\"sessions\":[";
+  for (int i = 0; i < sessionCount; i++) {
+    if (i > 0) json += ",";
+    json += "{";
+    json += "\"id\":" + String(i + 1) + ",";
+    json += "\"startTime\":\"" + sessionHistory[i].startTime + "\",";
+    json += "\"stopTime\":\"" + sessionHistory[i].stopTime + "\",";
+    json += "\"durationSeconds\":" + String(sessionHistory[i].durationSec) + ",";
+    json += "\"peakPower\":" + String(sessionHistory[i].peakPower, 1) + ",";
+    json += "\"energy\":" + String(sessionHistory[i].energyKWh, 3) + ",";
+    json += "\"cost\":" + String(sessionHistory[i].sessionCost, 2);
+    json += "}";
+  }
+  json += "]";
+
+  json += "}";
   server.send(200, "application/json", json);
 }
 
 // ============================================================
 // LOCAL WEB PAGE (READ-ONLY CONSUMER LIVE VIEW)
-// NO RESET / NO SETTINGS EDIT BUTTONS (ADMIN-ONLY ON WEB PORTAL)
+// EXACT SAME MODERN UI & STRUCTURE AS THE USER CLOUD LOGIN PORTAL
 // ============================================================
 String htmlPage() {
   return R"rawliteral(<!DOCTYPE html>
@@ -633,11 +756,11 @@ String htmlPage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>ESP32 Smart Energy Meter — Local Live Monitor</title>
+<title>VOLTRONIX CLOUD — Local Power Monitor</title>
 <style>
 :root {
   --bg-deep: #f8fafc;
-  --card-bg: rgba(255, 255, 255, 0.92);
+  --card-bg: rgba(255, 255, 255, 0.94);
   --border: #e2e8f0;
   --text-main: #0f172a;
   --text-dim: #475569;
@@ -658,7 +781,7 @@ body {
   min-height: 100vh;
   padding: 16px 12px 30px;
 }
-.container { max-width: 1050px; margin: 0 auto; }
+.container { max-width: 1100px; margin: 0 auto; }
 .card {
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -671,21 +794,21 @@ body {
 /* Header */
 .header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 16px 24px; margin-bottom: 20px;
+  padding: 16px 24px; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-icon {
-  width: 42px; height: 42px; border-radius: 12px;
+  width: 44px; height: 44px; border-radius: 12px;
   background: linear-gradient(135deg, var(--cyan), var(--blue));
   display: flex; align-items: center; justify-content: center;
-  color: white; font-weight: 900; font-size: 20px;
+  color: white; font-weight: 900; font-size: 22px;
   box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
 }
-.brand-title { font-size: 1.2rem; font-weight: 800; color: var(--text-main); }
+.brand-title { font-size: 1.25rem; font-weight: 900; color: var(--text-main); }
 .brand-sub { font-size: 0.75rem; color: var(--text-dim); }
 .status-pill {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 14px; border-radius: 30px; font-size: 0.78rem; font-weight: 700;
+  padding: 7px 16px; border-radius: 30px; font-size: 0.78rem; font-weight: 800;
   background: #ffffff; border: 1px solid var(--border);
 }
 .dot {
@@ -694,13 +817,21 @@ body {
   animation: pulse 1.8s infinite;
 }
 
-/* Read-Only Notice */
+/* Security Notice */
 .readonly-notice {
   display: flex; align-items: center; gap: 12px;
   padding: 12px 18px; border-radius: 14px;
   background: #e0f2fe; border: 1px solid #bae6fd;
   color: #0369a1; font-size: 0.82rem; font-weight: 600;
   margin-bottom: 20px;
+}
+
+/* Overdue Banner */
+#overdueBanner {
+  display: none; justify-content: space-between; align-items: center;
+  padding: 14px 20px; border-radius: 16px;
+  background: #fef2f2; border: 1px solid #fecaca;
+  color: #991b1b; margin-bottom: 18px;
 }
 
 /* Hero Section */
@@ -734,15 +865,15 @@ body {
   border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-dim);
 }
 
-/* Quota Card */
+/* Quota / Balance Card */
 .budget-card { padding: 24px; display: flex; flex-direction: column; justify-content: space-between; }
-.metric-row { margin-bottom: 20px; }
+.metric-row { margin-bottom: 18px; }
 .metric-row:last-child { margin-bottom: 0; }
 .row-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
 .row-val { font-size: 1.6rem; font-weight: 900; font-variant-numeric: tabular-nums; }
 .track { height: 12px; background: #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; }
 .fill { height: 100%; width: 0%; border-radius: 20px; transition: width 0.8s ease; }
-.sub-meta { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; font-weight: 500; }
+.sub-meta { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; font-weight: 600; }
 
 /* Grid Tiles */
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
@@ -756,24 +887,21 @@ body {
 .tile-val { font-size: 1.35rem; font-weight: 900; color: var(--text-main); font-variant-numeric: tabular-nums; }
 .tile-unit { font-size: 0.82rem; font-weight: 600; color: var(--text-dim); margin-left: 2px; }
 
-/* Institutional Admin Footer Notice */
-.admin-lock-card {
-  padding: 22px 24px; border-radius: 18px;
-  background: #ffffff; border: 1px solid var(--border);
-  display: flex; align-items: center; gap: 18px;
-  font-size: 0.82rem; color: var(--text-dim); line-height: 1.5;
-}
-.lock-icon {
-  width: 44px; height: 44px; border-radius: 12px;
-  background: #f1f5f9; color: var(--cyan);
-  display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0;
-}
+/* Tables */
+.table-card { padding: 22px 24px; margin-bottom: 20px; }
+.table-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.table-title { font-size: 1.05rem; font-weight: 800; }
+.table-wrapper { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; text-align: left; }
+th { background: #f8fafc; padding: 10px 12px; color: var(--text-dim); font-weight: 800; text-transform: uppercase; font-size: 0.72rem; }
+td { padding: 10px 12px; border-top: 1px solid var(--border); }
+tr:hover td { background: #f8fafc; }
 
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(0.9); } }
 
 @media (max-width: 800px) { .hero { grid-template-columns: 1fr; } }
 @media (max-width: 520px) {
-  .header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .header { flex-direction: column; align-items: flex-start; }
   .grid { grid-template-columns: 1fr 1fr; }
   .power-val { font-size: 2.7rem; }
 }
@@ -788,8 +916,8 @@ body {
     <div class="brand">
       <div class="brand-icon">⚡</div>
       <div>
-        <div class="brand-title">ESP32 POWER METER</div>
-        <div class="brand-sub">Local Wi-Fi Consumer Portal (Read-Only)</div>
+        <div class="brand-title">VOLTRONIX CLOUD</div>
+        <div class="brand-sub">ESP32 Local Consumer Monitor (Read-Only)</div>
       </div>
     </div>
     <div class="status-pill">
@@ -803,8 +931,17 @@ body {
     <span>🔒</span>
     <span>
       <strong>Read-Only Consumer View:</strong> Live telemetry is streamed directly from the PZEM-004T.
-      Tariff rates, quota limits, and resets are securely administered via the central cloud website.
+      Tariff updates, recharge crediting, and meter resets are securely administered via the central cloud website.
     </span>
+  </div>
+
+  <!-- Overdue Banner (Visible if overdue > 0) -->
+  <div id="overdueBanner">
+    <div>
+      <strong style="font-size:0.95rem;">Outstanding Dues Notice: ₹<span id="overdueAmountBanner">0.00</span></strong>
+      <div style="font-size:0.78rem;opacity:0.9;">Recharge balance has been depleted. Please contact administrator to recharge.</div>
+    </div>
+    <span style="font-size:0.8rem;font-weight:800;background:#fee2e2;color:var(--red);padding:4px 10px;borderRadius:12px;">PAYMENT DUE</span>
   </div>
 
   <!-- Hero Power & Quota Row -->
@@ -843,42 +980,39 @@ body {
       </div>
     </div>
 
-    <!-- Quota & Balance Card -->
+    <!-- Prepaid Balance Card -->
     <div class="budget-card card">
       <div class="card-head" style="margin-bottom:14px;">
-        <span class="card-lbl">Quota & Budget Status</span>
-        <span id="percentLeftBadge" style="font-size:0.8rem;font-weight:800;color:var(--emerald)">100% REMAINING</span>
+        <span class="card-lbl">Prepaid Balance & Energy Quota</span>
+        <span id="percentLeftBadge" style="font-size:0.8rem;font-weight:800;color:var(--emerald)">100% BALANCE LEFT</span>
       </div>
 
       <div class="metric-row">
         <div class="row-head">
-          <span style="font-size:0.8rem;color:var(--text-dim)">Units Remaining</span>
-          <div class="row-val" style="color:var(--cyan)">
-            <span id="unitsLeft">0.000</span> <span style="font-size:0.9rem;color:var(--text-dim)">kWh</span>
-          </div>
-        </div>
-        <div class="track">
-          <div class="fill" id="unitsBar" style="background:linear-gradient(90deg, #0284c7, #2563eb)"></div>
-        </div>
-        <div class="sub-meta">
-          <span>Used: <strong id="usedEnergyVal">0.000</strong> kWh</span>
-          <span>Allocated: <strong id="allowedUnitsVal">0</strong> kWh</span>
-        </div>
-      </div>
-
-      <div class="metric-row">
-        <div class="row-head">
-          <span style="font-size:0.8rem;color:var(--text-dim)">Remaining Balance</span>
+          <span style="font-size:0.8rem;color:var(--text-dim)">Available Account Balance</span>
           <div class="row-val" style="color:var(--emerald)">
-            ₹<span id="amountRemaining">0.00</span>
+            ₹<span id="accountBalance">0.00</span>
           </div>
         </div>
         <div class="track">
-          <div class="fill" id="moneyBar" style="background:linear-gradient(90deg, #059669, #0284c7)"></div>
+          <div class="fill" id="moneyBar" style="background:linear-gradient(90deg, #10b981, #0284c7)"></div>
         </div>
         <div class="sub-meta">
-          <span>Current Bill: ₹<span id="totalCost">0.00</span></span>
-          <span>Total Cap: ₹<span id="allowedAmount">0.00</span></span>
+          <span>Recharged: <strong>₹<span id="rechargeVal">0.00</span></strong></span>
+          <span>Consumed: <strong>₹<span id="billedVal">0.00</span></strong></span>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <div class="row-head">
+          <span style="font-size:0.8rem;color:var(--text-dim)">Units Available from Balance</span>
+          <div class="row-val" style="color:var(--cyan)">
+            <span id="unitsAvailableVal">0.000</span> <span style="font-size:0.9rem;color:var(--text-dim)">kWh</span>
+          </div>
+        </div>
+        <div class="sub-meta">
+          <span>Total Consumed: <strong><span id="usedEnergyVal">0.000</span> kWh</strong></span>
+          <span id="overdueMeta" style="color:var(--red);display:none;font-weight:800;">Overdue: ₹<span id="overdueVal">0.00</span></span>
         </div>
       </div>
     </div>
@@ -913,7 +1047,7 @@ body {
     <div class="tile card">
       <div class="tile-icon" style="color:#059669;">₹</div>
       <div class="tile-body">
-        <div class="tile-lbl">Tariff Unit Price</div>
+        <div class="tile-lbl">Tariff Rate</div>
         <div class="tile-val">₹<span id="priceVal">0.00</span><span class="tile-unit">/kWh</span></div>
       </div>
     </div>
@@ -935,14 +1069,31 @@ body {
     </div>
   </section>
 
-  <!-- Administrative Security Footer -->
-  <div class="admin-lock-card">
-    <div class="lock-icon">🛡️</div>
-    <div>
-      <strong style="color:var(--text-main);display:block;margin-bottom:2px;">Centralized Cloud Administration Enabled</strong>
-      Tariff reconfigurations, energy quota increases, and historical audit resets are restricted to the authorized System Administrator via the Cloud Portal. Local Wi-Fi consumers are granted live, tamper-proof monitoring.
+  <!-- Load Sessions Breakdown Table -->
+  <section class="table-card card">
+    <div class="table-head">
+      <div class="table-title">⚡ Load Sessions & Consumption History</div>
+      <div style="font-size:0.78rem;color:var(--text-dim);" id="sessionSummaryText">Recent appliance runs</div>
     </div>
-  </div>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Session #</th>
+            <th>Start Time</th>
+            <th>Stop Time</th>
+            <th>Duration</th>
+            <th>Peak Watts</th>
+            <th>Units (kWh)</th>
+            <th>Cost (₹)</th>
+          </tr>
+        </thead>
+        <tbody id="sessionsTbody">
+          <tr><td colspan="7" style="text-align:center;color:var(--text-dim);padding:14px;">No active sessions recorded yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
 </div>
 
@@ -958,17 +1109,29 @@ async function update() {
     document.getElementById('currentVal').innerText = d.current.toFixed(3);
     document.getElementById('powerVal').innerText = d.power.toFixed(1);
     document.getElementById('pfVal').innerText = d.pf.toFixed(2);
-    document.getElementById('unitsLeft').innerText = d.unitsLeft.toFixed(3);
+    document.getElementById('priceVal').innerText = d.unitPrice.toFixed(2);
+    document.getElementById('rechargeVal').innerText = d.rechargeAmount.toFixed(2);
+    document.getElementById('billedVal').innerText = d.billedAmount.toFixed(2);
+    document.getElementById('accountBalance').innerText = d.accountBalance.toFixed(2);
     document.getElementById('usedEnergyVal').innerText = d.energy.toFixed(3);
-    document.getElementById('allowedUnitsVal').innerText = d.allowedUnits.toFixed(1);
-    document.getElementById('totalCost').innerText = d.cost.toFixed(2);
-    document.getElementById('priceVal').innerText = d.price.toFixed(2);
-    document.getElementById('amountRemaining').innerText = d.amountRemaining.toFixed(2);
-    document.getElementById('allowedAmount').innerText = d.allowedAmount.toFixed(2);
+    document.getElementById('unitsAvailableVal').innerText = d.unitsAvailable.toFixed(3);
     document.getElementById('timeVal').innerText = d.currentTime;
     document.getElementById('runningTime').innerText = d.runningTime;
     document.getElementById('stopVal').innerText = d.stopTime;
     document.getElementById('startTime').innerText = d.startTime;
+
+    // Overdue alerts
+    const overdueBanner = document.getElementById('overdueBanner');
+    const overdueMeta = document.getElementById('overdueMeta');
+    if (d.overdueAmount > 0) {
+      overdueBanner.style.display = 'flex';
+      document.getElementById('overdueAmountBanner').innerText = d.overdueAmount.toFixed(2);
+      overdueMeta.style.display = 'inline';
+      document.getElementById('overdueVal').innerText = d.overdueAmount.toFixed(2);
+    } else {
+      overdueBanner.style.display = 'none';
+      overdueMeta.style.display = 'none';
+    }
 
     // Load status badge
     const loadBadge = document.getElementById('loadBadge');
@@ -987,18 +1150,14 @@ async function update() {
     let offset = 251.3 - (powerRatio * 251.3);
     document.getElementById('gaugePath').style.strokeDashoffset = offset;
 
-    // Quota Percentage & Bars
-    let unitPct = d.allowedUnits > 0 ? (d.unitsLeft / d.allowedUnits) * 100 : 0;
-    unitPct = Math.min(Math.max(unitPct, 0), 100);
-    document.getElementById('unitsBar').style.width = unitPct + '%';
-
-    let moneyPct = d.allowedAmount > 0 ? (d.amountRemaining / d.allowedAmount) * 100 : 0;
-    moneyPct = Math.min(Math.max(moneyPct, 0), 100);
-    document.getElementById('moneyBar').style.width = moneyPct + '%';
+    // Balance Percentage & Bar
+    let balPct = d.rechargeAmount > 0 ? (d.accountBalance / d.rechargeAmount) * 100 : 0;
+    balPct = Math.min(Math.max(balPct, 0), 100);
+    document.getElementById('moneyBar').style.width = balPct + '%';
 
     const pBadge = document.getElementById('percentLeftBadge');
-    pBadge.innerText = Math.round(unitPct) + '% REMAINING';
-    pBadge.style.color = unitPct < 20 ? 'var(--red)' : (unitPct < 50 ? 'var(--amber)' : 'var(--emerald)');
+    pBadge.innerText = Math.round(balPct) + '% BALANCE LEFT';
+    pBadge.style.color = balPct < 20 ? 'var(--red)' : (balPct < 50 ? 'var(--amber)' : 'var(--emerald)');
 
     // WiFi status badge
     const statusText = document.getElementById('statusText');
@@ -1009,6 +1168,25 @@ async function update() {
     } else {
       statusText.innerText = 'LOCAL OFFLINE';
       dot.style.background = 'var(--amber)';
+    }
+
+    // Sessions table
+    if (d.sessions && d.sessions.length > 0) {
+      let tbodyHtml = '';
+      d.sessions.forEach((s) => {
+        let dur = Math.floor(s.durationSeconds / 60) + 'm ' + (s.durationSeconds % 60) + 's';
+        tbodyHtml += '<tr>';
+        tbodyHtml += '<td><strong>#' + s.id + '</strong></td>';
+        tbodyHtml += '<td>' + s.startTime + '</td>';
+        tbodyHtml += '<td>' + (s.stopTime && s.stopTime !== '--:--:--' ? s.stopTime : 'In Progress') + '</td>';
+        tbodyHtml += '<td>' + dur + '</td>';
+        tbodyHtml += '<td style="color:var(--cyan);font-weight:700;">' + s.peakPower.toFixed(1) + ' W</td>';
+        tbodyHtml += '<td>' + s.energy.toFixed(3) + ' kWh</td>';
+        tbodyHtml += '<td style="color:var(--emerald);font-weight:800;">₹' + s.cost.toFixed(2) + '</td>';
+        tbodyHtml += '</tr>';
+      });
+      document.getElementById('sessionsTbody').innerHTML = tbodyHtml;
+      document.getElementById('sessionSummaryText').innerText = d.sessions.length + ' sessions logged';
     }
   } catch (err) {
     document.getElementById('statusText').innerText = 'OFFLINE';
@@ -1081,9 +1259,11 @@ void setup() {
 
   // Load Saved Preferences
   prefs.begin("powermeter", false);
-  unitPrice    = prefs.getFloat("price", 8.50);
-  allowedUnits = prefs.getFloat("allowed", 100.0);
-  initialEnergy = prefs.getFloat("initial", 0.0);
+  unitPrice          = prefs.getFloat("price", 8.50);
+  rechargeAmount     = prefs.getFloat("recharge", 1000.0);
+  initialEnergy      = prefs.getFloat("initial", 0.0);
+  lockedBilledCost   = prefs.getFloat("lockCost", 0.0);
+  lockedBilledEnergy = prefs.getFloat("lockEnergy", 0.0);
 
   // Connect to WiFi
   bool connected = connectWiFi();
@@ -1134,7 +1314,7 @@ void loop() {
   if (millis() - lastSettingsSave >= SETTINGS_SAVE_INTERVAL) {
     lastSettingsSave = millis();
     prefs.putFloat("price", unitPrice);
-    prefs.putFloat("allowed", allowedUnits);
+    prefs.putFloat("recharge", rechargeAmount);
   }
 
   delay(5);

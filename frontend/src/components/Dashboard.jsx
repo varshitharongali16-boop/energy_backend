@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { fetchApi } from '../api';
 import Gauge from './Gauge';
 import HistoryChart from './HistoryChart';
@@ -7,7 +7,6 @@ import {
   Activity,
   DollarSign,
   Clock,
-  Settings,
   LogOut,
   Shield,
   Layers,
@@ -15,8 +14,10 @@ import {
   AlertTriangle,
   Volume2,
   VolumeX,
-  Sparkles,
-  Calendar
+  Calendar,
+  ListFilter,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 
 export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToLanding, showToast }) {
@@ -26,16 +27,14 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
   const [analytics, setAnalytics] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null);
 
-  // Settings & Overload Alarm
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [newPrice, setNewPrice] = useState('');
-  const [newUnits, setNewUnits] = useState('');
+  // Sessions and Monthly History
+  const [sessions, setSessions] = useState([]);
+  const [sessionSummary, setSessionSummary] = useState(null);
+  const [monthlyRecords, setMonthlyRecords] = useState([]);
+
+  // Alarm threshold
   const [overloadThreshold, setOverloadThreshold] = useState(2500);
   const [soundEnabled, setSoundEnabled] = useState(false);
-
-  // Interactive Demo Mode
-  const [demoMode, setDemoMode] = useState(false);
-  const simulatedEnergyRef = useRef(12.450);
 
   // Audio tone generator for alarms
   const playAlarmTone = () => {
@@ -76,50 +75,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     loadMeters();
   }, []);
 
-  // Polling or Demo Simulator
+  // Poll live telemetry every 3s
   useEffect(() => {
-    if (demoMode) {
-      // Simulator generates fluctuating PZEM readings
-      const simInterval = setInterval(() => {
-        const simPower = Math.floor(600 + Math.random() * 2200 + (Math.sin(Date.now() / 2000) * 400));
-        const simVoltage = 228 + (Math.random() * 8);
-        const simCurrent = simPower / simVoltage;
-        simulatedEnergyRef.current += (simPower / 3600000);
-        const simEnergy = simulatedEnergyRef.current;
-        const price = deviceInfo ? deviceInfo.unitPrice : 8.50;
-        const allowed = deviceInfo ? deviceInfo.allowedUnits : 100.0;
-        const cost = simEnergy * price;
-        const unitsLeft = Math.max(0, allowed - simEnergy);
-        const allowedAmount = allowed * price;
-        const amountRem = Math.max(0, allowedAmount - cost);
-
-        setLiveData({
-          power: simPower,
-          voltage: simVoltage,
-          current: simCurrent,
-          pf: 0.98,
-          energy: simEnergy,
-          cost: cost,
-          is_load_on: simPower > 10,
-          recorded_at: new Date().toISOString()
-        });
-
-        setAnalytics({
-          unitsLeft,
-          usedEnergy: simEnergy,
-          totalAllowedAmount: allowedAmount,
-          amountRemaining: amountRem,
-          percentRemaining: (unitsLeft / allowed) * 100
-        });
-
-        if (simPower >= overloadThreshold) {
-          playAlarmTone();
-        }
-      }, 1500);
-
-      return () => clearInterval(simInterval);
-    }
-
     if (!selectedMeterId) return;
 
     let isMounted = true;
@@ -149,37 +106,40 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
       isMounted = false;
       clearInterval(interval);
     };
-  }, [selectedMeterId, demoMode, overloadThreshold, soundEnabled]);
+  }, [selectedMeterId, overloadThreshold, soundEnabled]);
 
-  const handleSaveSettings = async (e) => {
-    e.preventDefault();
-    if (demoMode) {
-      setDeviceInfo((prev) => ({
-        ...prev,
-        unitPrice: parseFloat(newPrice),
-        allowedUnits: parseFloat(newUnits)
-      }));
-      showToast('Settings saved for Demo mode!');
-      setIsSettingsOpen(false);
-      return;
-    }
-
+  // Load sessions and monthly history when selected meter changes
+  useEffect(() => {
     if (!selectedMeterId) return;
 
-    try {
-      const res = await fetchApi(`/api/meters/${selectedMeterId}/settings`, {
-        method: 'PUT',
-        body: JSON.stringify({ unitPrice: newPrice, allowedUnits: newUnits })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update settings');
-      showToast('Settings saved! Syncing down to ESP32...');
-      setIsSettingsOpen(false);
-    } catch (err) {
-      showToast(err.message);
-    }
-  };
+    async function fetchHistoryTables() {
+      try {
+        const [sessRes, monthRes] = await Promise.all([
+          fetchApi(`/api/meters/${selectedMeterId}/sessions`),
+          fetchApi(`/api/meters/${selectedMeterId}/monthly`)
+        ]);
 
+        const sessData = await sessRes.json();
+        const monthData = await monthRes.json();
+
+        if (sessRes.ok && sessData.sessions) {
+          setSessions(sessData.sessions);
+          setSessionSummary(sessData.summary);
+        }
+        if (monthRes.ok && monthData.months) {
+          setMonthlyRecords(monthData.months);
+        }
+      } catch (err) {
+        console.warn('History tables fetch error:', err);
+      }
+    }
+
+    fetchHistoryTables();
+    const interval = setInterval(fetchHistoryTables, 15000);
+    return () => clearInterval(interval);
+  }, [selectedMeterId]);
+
+  // Metrics extraction
   const power = liveData ? parseFloat(liveData.power) || 0 : 0;
   const isLoadOn = liveData ? Boolean(liveData.is_load_on) : false;
   const voltage = liveData ? parseFloat(liveData.voltage) || 0 : 0;
@@ -187,17 +147,16 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
   const pf = liveData ? parseFloat(liveData.pf) || 0 : 0;
   const recordedAt = liveData && liveData.recorded_at ? new Date(liveData.recorded_at).toLocaleTimeString() : '--:--:--';
 
-  const unitsLeft = analytics ? analytics.unitsLeft : 0;
   const usedEnergy = analytics ? analytics.usedEnergy : 0;
-  const allowedUnits = deviceInfo ? deviceInfo.allowedUnits : 100;
   const unitPrice = deviceInfo ? deviceInfo.unitPrice : 8.50;
-  const amountRemaining = analytics ? analytics.amountRemaining : 0;
-  const totalCost = liveData ? parseFloat(liveData.cost) || 0 : 0;
-  const totalAllowedAmount = analytics ? analytics.totalAllowedAmount : 0;
-  const percentRemaining = analytics ? Math.min(Math.max(analytics.percentRemaining, 0), 100) : 100;
-  const moneyPct = totalAllowedAmount > 0 ? Math.min(Math.max((amountRemaining / totalAllowedAmount) * 100, 0), 100) : 0;
+  const rechargeAmount = analytics ? analytics.rechargeAmount : 1000.0;
+  const billedAmount = analytics ? analytics.billedAmount : 0;
+  const accountBalance = analytics ? analytics.accountBalance : 0;
+  const overdueAmount = analytics ? analytics.overdueAmount : 0;
+  const unitsAvailable = analytics ? analytics.unitsAvailable : 0;
+  const balancePercent = analytics ? analytics.balancePercent : 0;
 
-  const isOnline = demoMode ? true : (deviceInfo ? deviceInfo.isOnline : false);
+  const isOnline = deviceInfo ? deviceInfo.isOnline : false;
   const isOverloaded = power >= overloadThreshold;
 
   // Projections Math
@@ -205,7 +164,6 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
   const dailyProjectedKWh = (power / 1000) * 24;
   const dailyProjectedCost = dailyProjectedKWh * unitPrice;
   const monthlyProjectedCost = dailyProjectedCost * 30;
-  const daysOfQuotaLeft = dailyProjectedKWh > 0 ? (unitsLeft / dailyProjectedKWh).toFixed(1) : '∞';
 
   return (
     <div className="container">
@@ -222,20 +180,6 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         </div>
 
         <div className="nav-actions">
-          {/* Demo Mode Switch */}
-          <div
-            onClick={() => {
-              setDemoMode(!demoMode);
-              showToast(demoMode ? 'Switched to Live ESP32 Telemetry' : 'Demo Simulator Activated!');
-            }}
-            className={`demo-toggle ${demoMode ? 'active' : ''}`}
-            title="Toggle simulated live energy data"
-          >
-            <Sparkles size={14} />
-            <span>{demoMode ? 'DEMO ACTIVE' : 'DEMO MODE'}</span>
-            <span className="demo-switch-dot"></span>
-          </div>
-
           {/* Sound Alert Toggle */}
           <button
             onClick={() => {
@@ -251,7 +195,7 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
 
           <div className="status-pill">
             <div className={`dot ${isOnline ? '' : 'offline'}`} />
-            <span>{demoMode ? 'SIMULATOR LIVE' : (isOnline ? 'METER ONLINE' : 'METER OFFLINE')}</span>
+            <span>{isOnline ? 'METER ONLINE' : 'METER OFFLINE'}</span>
           </div>
 
           <div className="user-badge">
@@ -311,6 +255,35 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         </div>
       )}
 
+      {/* Overdue Alert Banner if overdue > 0 */}
+      {overdueAmount > 0 && (
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '14px 20px',
+          borderRadius: '16px',
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          color: '#991b1b',
+          marginBottom: '18px',
+          boxShadow: '0 2px 10px rgba(239,68,68,0.08)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AlertCircle size={22} style={{ color: 'var(--red)' }} />
+            <div>
+              <strong style={{ fontSize: '0.95rem' }}>Outstanding Dues Notice: ₹{overdueAmount.toFixed(2)}</strong>
+              <div style={{ fontSize: '0.78rem', opacity: 0.9 }}>
+                Recharge balance has been depleted. Please contact your administrator to recharge your account.
+              </div>
+            </div>
+          </div>
+          <span style={{ fontSize: '0.8rem', fontWeight: 800, background: '#fee2e2', color: 'var(--red)', padding: '5px 12px', borderRadius: '20px' }}>
+            PAYMENT DUE
+          </span>
+        </div>
+      )}
+
       {/* Meter Select Bar */}
       <div
         style={{
@@ -340,18 +313,9 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
           </select>
         </div>
 
-        <button
-          onClick={() => {
-            setNewPrice(unitPrice);
-            setNewUnits(allowedUnits);
-            setIsSettingsOpen(true);
-          }}
-          className="btn btn-outline"
-          style={{ fontSize: '0.8rem', padding: '8px 16px' }}
-        >
-          <Settings size={15} />
-          <span>Adjust Quota & Tariff</span>
-        </button>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          🔒 Tariff rate: <strong>₹{unitPrice.toFixed(2)}/kWh</strong> (Admin configured)
+        </div>
       </div>
 
       {/* Hero Power & Quota Row */}
@@ -363,64 +327,60 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
           overloadLimit={overloadThreshold}
         />
 
+        {/* Prepaid Recharge & Energy Balance Card */}
         <div className="budget-card glass">
           <div className="card-top" style={{ marginBottom: '14px' }}>
-            <span className="card-label">Quota & Budget Intelligence</span>
+            <span className="card-label">Prepaid Balance & Energy Quota</span>
             <span
               style={{
                 fontSize: '0.8rem',
-                fontWeight: 700,
-                color: percentRemaining < 20 ? 'var(--red)' : percentRemaining < 50 ? 'var(--amber)' : 'var(--emerald)'
+                fontWeight: 800,
+                color: balancePercent < 20 ? 'var(--red)' : balancePercent < 50 ? 'var(--amber)' : 'var(--emerald)'
               }}
             >
-              {Math.round(percentRemaining)}% REMAINING
+              {Math.round(balancePercent)}% BALANCE LEFT
             </span>
           </div>
 
-          {/* Units Left */}
+          {/* Account Balance */}
           <div className="metric-group">
             <div className="metric-header">
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Units Left</span>
-              <div className="metric-val" style={{ color: 'var(--cyan)' }}>
-                {unitsLeft.toFixed(3)}{' '}
-                <span style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-secondary)' }}>kWh</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Available Account Balance</span>
+              <div className="metric-val" style={{ color: accountBalance > 0 ? 'var(--emerald)' : 'var(--red)' }}>
+                ₹{accountBalance.toFixed(2)}
               </div>
             </div>
             <div className="progress-track">
               <div
                 className="progress-bar"
                 style={{
-                  width: `${percentRemaining}%`,
-                  background: 'linear-gradient(90deg, #00f0ff, #3b82f6)'
+                  width: `${balancePercent}%`,
+                  background: balancePercent < 20
+                    ? 'linear-gradient(90deg, #ef4444, #f59e0b)'
+                    : 'linear-gradient(90deg, #10b981, #0284c7)'
                 }}
               />
             </div>
             <div className="metric-meta">
-              <span>Used: <strong>{usedEnergy.toFixed(3)}</strong> kWh</span>
-              <span>Allocated: <strong>{allowedUnits}</strong> kWh</span>
+              <span>Recharged: <strong>₹{rechargeAmount.toFixed(2)}</strong></span>
+              <span>Consumed: <strong>₹{billedAmount.toFixed(2)}</strong></span>
             </div>
           </div>
 
-          {/* Money Balance */}
-          <div className="metric-group">
+          {/* Units Remaining based on Balance */}
+          <div className="metric-group" style={{ marginTop: '16px' }}>
             <div className="metric-header">
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Account Balance</span>
-              <div className="metric-val" style={{ color: 'var(--emerald)' }}>
-                ₹{amountRemaining.toFixed(2)}
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Units Available from Balance</span>
+              <div className="metric-val" style={{ color: 'var(--cyan)' }}>
+                {unitsAvailable.toFixed(3)}{' '}
+                <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>kWh</span>
               </div>
             </div>
-            <div className="progress-track">
-              <div
-                className="progress-bar"
-                style={{
-                  width: `${moneyPct}%`,
-                  background: 'linear-gradient(90deg, #10b981, #00f0ff)'
-                }}
-              />
-            </div>
-            <div className="metric-meta">
-              <span>Billed: ₹<strong>{totalCost.toFixed(2)}</strong></span>
-              <span>Cap: ₹<strong>{totalAllowedAmount.toFixed(2)}</strong></span>
+            <div className="metric-meta" style={{ marginTop: '4px' }}>
+              <span>Total Energy Consumed: <strong>{usedEnergy.toFixed(3)}</strong> kWh</span>
+              {overdueAmount > 0 && (
+                <span style={{ color: 'var(--red)', fontWeight: 800 }}>Overdue: ₹{overdueAmount.toFixed(2)}</span>
+              )}
             </div>
           </div>
         </div>
@@ -431,16 +391,16 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <TrendingUp size={18} style={{ color: 'var(--cyan)' }} />
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 800 }}>Smart Billing Projections & Run Rate</h3>
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 800 }}>Billing Run Rate & Consumption Projections</h3>
           </div>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-            Calculated based on active wattage & ₹{unitPrice.toFixed(2)}/kWh tariff
+            Calculated at active draw of {power.toFixed(0)}W & ₹{unitPrice.toFixed(2)}/kWh tariff
           </span>
         </div>
 
         <div className="projection-grid">
           <div className="projection-item">
-            <span className="projection-label">Current Burn Rate</span>
+            <span className="projection-label">Active Burn Rate</span>
             <div className="projection-val" style={{ color: 'var(--cyan)' }}>
               ₹{hourlyBurnCost.toFixed(2)} <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>/hr</span>
             </div>
@@ -461,9 +421,9 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
           </div>
 
           <div className="projection-item">
-            <span className="projection-label">Estimated Quota Runway</span>
+            <span className="projection-label">Active Power Draw</span>
             <div className="projection-val" style={{ color: 'var(--emerald)' }}>
-              {daysOfQuotaLeft} <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>days left</span>
+              {power.toFixed(1)} <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Watts</span>
             </div>
           </div>
         </div>
@@ -515,7 +475,7 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
             <DollarSign size={22} />
           </div>
           <div className="tile-body">
-            <div className="tile-label">Tariff Rate</div>
+            <div className="tile-label">Tariff Unit Price</div>
             <div className="tile-val">
               ₹{unitPrice.toFixed(2)}
               <span className="tile-unit">/kWh</span>
@@ -529,8 +489,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
           </div>
           <div className="tile-body">
             <div className="tile-label">Overdue Dues</div>
-            <div className="tile-val" style={{ color: 'var(--red)' }}>
-              ₹{deviceInfo ? parseFloat(deviceInfo.overdueAmount || 0).toFixed(2) : '0.00'}
+            <div className="tile-val" style={{ color: overdueAmount > 0 ? 'var(--red)' : 'var(--text-primary)' }}>
+              ₹{overdueAmount.toFixed(2)}
             </div>
           </div>
         </div>
@@ -540,82 +500,126 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
             <DollarSign size={22} />
           </div>
           <div className="tile-body">
-            <div className="tile-label">Total Paid</div>
+            <div className="tile-label">Total Recharged</div>
             <div className="tile-val" style={{ color: 'var(--emerald)' }}>
-              ₹{deviceInfo ? parseFloat(deviceInfo.paidAmount || 0).toFixed(2) : '0.00'}
+              ₹{rechargeAmount.toFixed(2)}
             </div>
           </div>
         </div>
       </section>
 
+      {/* Load Sessions Breakdown Table */}
+      <section className="form-card glass" style={{ marginBottom: '22px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ListFilter size={18} style={{ color: 'var(--cyan)' }} />
+            <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Load Sessions & Energy Breakdown</h3>
+          </div>
+          {sessionSummary && (
+            <div style={{ display: 'flex', gap: '14px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              <span>Total Sessions: <strong>{sessionSummary.totalSessions}</strong></span>
+              <span>Total Session Units: <strong style={{ color: 'var(--cyan)' }}>{sessionSummary.totalSessionUnits} kWh</strong></span>
+              <span>Session Cost: <strong style={{ color: 'var(--emerald)' }}>₹{sessionSummary.totalSessionCost}</strong></span>
+            </div>
+          )}
+        </div>
+
+        <div className="table-wrapper" style={{ maxHeight: '280px', overflowY: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Session #</th>
+                <th>Start Time</th>
+                <th>Stop Time</th>
+                <th>Duration</th>
+                <th>Peak Load (W)</th>
+                <th>Energy (kWh)</th>
+                <th>Session Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.length === 0 ? (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
+                    No recorded load sessions yet. Turn on a connected appliance to record session analytics.
+                  </td>
+                </tr>
+              ) : (
+                sessions.map((sess, idx) => (
+                  <tr key={sess.id || idx}>
+                    <td><strong>#{sessions.length - idx}</strong></td>
+                    <td style={{ fontSize: '0.8rem' }}>{sess.start_time ? new Date(sess.start_time).toLocaleString() : '--'}</td>
+                    <td style={{ fontSize: '0.8rem' }}>{sess.stop_time ? new Date(sess.stop_time).toLocaleString() : 'In Progress'}</td>
+                    <td>{Math.floor((sess.duration_seconds || 0) / 60)}m {((sess.duration_seconds || 0) % 60)}s</td>
+                    <td style={{ fontWeight: 700, color: 'var(--cyan)' }}>{parseFloat(sess.peak_power || 0).toFixed(1)} W</td>
+                    <td style={{ fontWeight: 700 }}>{parseFloat(sess.energy_kwh || 0).toFixed(3)} kWh</td>
+                    <td style={{ fontWeight: 800, color: 'var(--emerald)' }}>₹{parseFloat(sess.session_cost || 0).toFixed(2)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Monthly Consumption & Dues History Table */}
+      <section className="form-card glass" style={{ marginBottom: '22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <Calendar size={18} style={{ color: 'var(--purple)' }} />
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Monthly Energy & Dues Breakdown</h3>
+        </div>
+
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Units Consumed (kWh)</th>
+                <th>Total Billed Amount</th>
+                <th>Recharged Funds</th>
+                <th>Overdue Status</th>
+                <th>Payment Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyRecords.length === 0 ? (
+                <tr>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
+                    Monthly consumption ledger will populate as telemetry is aggregated.
+                  </td>
+                </tr>
+              ) : (
+                monthlyRecords.map((m, idx) => (
+                  <tr key={m.month_key || idx}>
+                    <td><strong>{m.month_label || m.month_key}</strong></td>
+                    <td style={{ fontWeight: 700, color: 'var(--cyan)' }}>{parseFloat(m.units_kwh || 0).toFixed(3)} kWh</td>
+                    <td style={{ fontWeight: 800 }}>₹{parseFloat(m.billed_amount || 0).toFixed(2)}</td>
+                    <td style={{ color: 'var(--emerald)', fontWeight: 700 }}>₹{parseFloat(m.recharged_amount || 0).toFixed(2)}</td>
+                    <td style={{ color: parseFloat(m.overdue_amount || 0) > 0 ? 'var(--red)' : 'var(--text-secondary)', fontWeight: 700 }}>
+                      ₹{parseFloat(m.overdue_amount || 0).toFixed(2)}
+                    </td>
+                    <td>
+                      <span style={{
+                        padding: '3px 8px',
+                        borderRadius: '8px',
+                        fontSize: '0.74rem',
+                        fontWeight: 800,
+                        background: m.status === 'DUE' ? '#fef2f2' : '#ecfdf5',
+                        color: m.status === 'DUE' ? 'var(--red)' : 'var(--emerald)'
+                      }}>
+                        ● {m.status || 'ACTIVE'}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* Historical Telemetry Chart with Export CSV */}
       <HistoryChart meterId={selectedMeterId} />
-
-      {/* Settings Modal */}
-      {isSettingsOpen && (
-        <div className="modal-overlay" onClick={() => setIsSettingsOpen(false)}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '6px' }}>
-              Update Quota & Alarm Thresholds
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
-              New values will be saved in PostgreSQL and synced to the ESP32.
-            </p>
-
-            <form onSubmit={handleSaveSettings}>
-              <div className="input-wrap" style={{ marginBottom: '14px' }}>
-                <label>Price Per Unit (₹)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.1"
-                  value={newPrice}
-                  onChange={(e) => setNewPrice(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="input-wrap" style={{ marginBottom: '14px' }}>
-                <label>Allowed Quota Units (kWh)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="1"
-                  value={newUnits}
-                  onChange={(e) => setNewUnits(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="input-wrap" style={{ marginBottom: '20px' }}>
-                <label>High Load Alarm Threshold (Watts)</label>
-                <input
-                  type="number"
-                  step="50"
-                  min="100"
-                  value={overloadThreshold}
-                  onChange={(e) => setOverloadThreshold(parseFloat(e.target.value) || 2500)}
-                  required
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="btn btn-outline"
-                  style={{ flex: 1 }}
-                >
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
-                  Save Changes
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

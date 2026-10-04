@@ -45,6 +45,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
   // Billing Update State for Inspected Meter
   const [billOverdue, setBillOverdue] = useState('');
   const [billPaid, setBillPaid] = useState('');
+  const [billRecharge, setBillRecharge] = useState('1000.00');
+  const [billBilledAmount, setBillBilledAmount] = useState('');
   const [billUnitPrice, setBillUnitPrice] = useState('');
   const [billNotes, setBillNotes] = useState('');
 
@@ -54,7 +56,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
   const [devKey, setDevKey] = useState('');
   const [assignedUserId, setAssignedUserId] = useState('');
   const [devPrice, setDevPrice] = useState('8.50');
-  const [devUnits, setDevUnits] = useState('100.0');
+  const [devRecharge, setDevRecharge] = useState('1000.00');
 
   // New User Form State
   const [username, setUsername] = useState('');
@@ -123,6 +125,11 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       setMeterDetails(data);
       setBillOverdue(data.device.overdue_amount !== undefined ? data.device.overdue_amount : '0.00');
       setBillPaid(data.device.paid_amount !== undefined ? data.device.paid_amount : '0.00');
+      setBillRecharge(data.device.recharge_amount !== undefined ? data.device.recharge_amount : '1000.00');
+      const currentBilled = parseFloat(data.device.locked_billed_cost || 0) > 0
+        ? parseFloat(data.device.locked_billed_cost).toFixed(2)
+        : (data.latest?.cost !== undefined ? parseFloat(data.latest.cost).toFixed(2) : '0.00');
+      setBillBilledAmount(currentBilled);
       setBillUnitPrice(data.device.unit_price || '8.50');
       setBillNotes('');
     } catch (err) {
@@ -142,6 +149,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
         body: JSON.stringify({
           overdueAmount: billOverdue,
           paidAmount: billPaid,
+          rechargeAmount: billRecharge,
+          billedAmount: billBilledAmount,
           unitPrice: billUnitPrice,
           notes: billNotes || 'Admin updated billing records and new tariff'
         })
@@ -158,6 +167,29 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
     }
   };
 
+  const handleResetAllMeterData = async () => {
+    if (!inspectedMeterId) return;
+    const confirmWipe = window.confirm(
+      `⚠️ DANGER: Are you sure you want to permanently erase ALL historical telemetry and load sessions for meter "${inspectedMeterId}"?\n\nThis will wipe all historical telemetry, clear all load sessions, and signal the ESP32 hardware to reset its internal counters on its next sync.`
+    );
+    if (!confirmWipe) return;
+
+    try {
+      const res = await fetchApi(`/api/admin/meters/${inspectedMeterId}/reset-all`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to reset meter data');
+
+      showToast('All past meter telemetry & session records erased successfully!');
+      handleInspectMeter(inspectedMeterId);
+      loadData();
+      loadDatabaseStats();
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
   const handleRegisterDevice = async (e) => {
     e.preventDefault();
     try {
@@ -169,7 +201,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
           apiKey: devKey,
           assignedUserId: assignedUserId || null,
           unitPrice: devPrice,
-          allowedUnits: devUnits
+          rechargeAmount: devRecharge
         })
       });
 
@@ -474,12 +506,12 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                     />
                   </div>
                   <div className="input-wrap">
-                    <label>Quota Limit (kWh)</label>
+                    <label>Initial Prepaid Quota (₹)</label>
                     <input
                       type="number"
-                      step="0.1"
-                      value={devUnits}
-                      onChange={(e) => setDevUnits(e.target.value)}
+                      step="0.01"
+                      value={devRecharge}
+                      onChange={(e) => setDevRecharge(e.target.value)}
                     />
                   </div>
                 </div>
@@ -978,29 +1010,113 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                     </div>
 
                     <div className="meter-detail-card">
-                      <div className="label">Relay Load State</div>
-                      <div className="value" style={{ color: meterDetails?.latest?.is_load_on ? 'var(--emerald)' : 'var(--red)' }}>
-                        {meterDetails?.latest?.is_load_on ? 'ON (Active)' : 'OFF (Cutoff)'}
+                      <div className="label">Load State</div>
+                      <div className="value" style={{ color: meterDetails?.latest?.is_load_on ? 'var(--emerald)' : 'var(--text-secondary)' }}>
+                        {meterDetails?.latest?.is_load_on ? 'ON (Active)' : 'STANDBY'}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Billing & Tariff Rate Assignment Form */}
+                {/* Billing, Recharge & Tariff Rate Assignment Form */}
                 <div style={{ background: '#f8fafc', padding: '18px 20px', borderRadius: '16px', border: '1px solid var(--border-subtle)', marginBottom: '20px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                     <DollarSign size={18} style={{ color: 'var(--cyan)' }} />
                     <h4 style={{ fontSize: '0.95rem', fontWeight: 800 }}>
-                      Manage Billing, Dues & Unit Price Rates
+                      Manage Quota, Billed Amount & Tariff Rates (Admin Only)
                     </h4>
                   </div>
                   <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
-                    Assign overdue dues, record payments, and set new tariff rates.
-                    <span style={{ color: 'var(--blue)', fontWeight: 700 }}> Note: New unit prices apply exclusively to future orders/cycles and will not retroactively alter previous energy records.</span>
+                    Credit user recharges, declare already billed amounts, and revise tariffs.
+                    <span style={{ color: 'var(--blue)', fontWeight: 700 }}> Any tariff increase applies strictly to the remaining units. Previously billed units stay locked at their old rate.</span>
                   </p>
 
+                  {/* Real-time Calculation & Tariff Impact Preview */}
+                  {(() => {
+                    const rChg = parseFloat(billRecharge) || 0;
+                    const bAmt = parseFloat(billBilledAmount) || 0;
+                    const uPrc = parseFloat(billUnitPrice) || 8.50;
+                    const prevBal = Math.max(0, rChg - bAmt);
+                    const remUnits = uPrc > 0 ? (prevBal / uPrc) : 0;
+
+                    return (
+                      <div style={{
+                        background: '#ffffff',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '12px',
+                        padding: '12px 16px',
+                        marginBottom: '16px',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
+                      }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Prepaid Quota</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--blue)' }}>₹{rChg.toFixed(2)}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Locked Billed (Protected)</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--amber)' }}>₹{bAmt.toFixed(2)}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Remaining Balance</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--emerald)' }}>₹{prevBal.toFixed(2)}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>New Tariff Rate</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--cyan)' }}>₹{uPrc.toFixed(2)} / kWh</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Remaining Units Available</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--purple)' }}>{remUnits.toFixed(3)} kWh</div>
+                          </div>
+                        </div>
+
+                        <div style={{ fontSize: '0.74rem', color: '#0369a1', background: '#e0f2fe', padding: '6px 10px', borderRadius: '8px', lineHeight: 1.4 }}>
+                          ⚡ <strong>Tariff Protection Rule Active:</strong> Changing the tariff to <strong>₹{uPrc.toFixed(2)}/kWh</strong> will strictly apply to the remaining <strong>{remUnits.toFixed(3)} kWh</strong>. The already billed usage of <strong>₹{bAmt.toFixed(2)}</strong> is protected and cannot be retroactively increased.
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <form onSubmit={handleUpdateBilling}>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                      <div className="input-wrap">
+                        <label>Recharge Quota Credited (₹)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={billRecharge}
+                          onChange={(e) => setBillRecharge(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="input-wrap">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label style={{ margin: 0 }}>Already Billed Usage (₹)</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const currCost = parseFloat(meterDetails?.latest?.cost || 0);
+                              setBillBilledAmount(currCost.toFixed(2));
+                            }}
+                            className="btn btn-outline"
+                            style={{ fontSize: '0.7rem', padding: '2px 8px', lineHeight: 1 }}
+                            title="Set billed amount to current meter consumption cost"
+                          >
+                            📍 Lock Current ₹{(parseFloat(meterDetails?.latest?.cost || 0)).toFixed(2)}
+                          </button>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={billBilledAmount}
+                          onChange={(e) => setBillBilledAmount(e.target.value)}
+                          placeholder="Tell billed amount (e.g. 250.00)"
+                          required
+                        />
+                      </div>
+
                       <div className="input-wrap">
                         <label>Overdue Dues Amount (₹)</label>
                         <input
@@ -1013,18 +1129,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                       </div>
 
                       <div className="input-wrap">
-                        <label>Paid Amount (₹)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={billPaid}
-                          onChange={(e) => setBillPaid(e.target.value)}
-                          required
-                        />
-                      </div>
-
-                      <div className="input-wrap">
-                        <label>New Tariff Unit Price (₹/kWh)</label>
+                        <label>Tariff Unit Price (₹/kWh)</label>
                         <input
                           type="number"
                           step="0.01"
@@ -1039,7 +1144,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                       <label>Audit Log Note</label>
                       <input
                         type="text"
-                        placeholder="e.g. Cleared past dues, set revised tariff for next cycle"
+                        placeholder="e.g. Set billed to ₹300, increased tariff to ₹10/kWh for remaining units"
                         value={billNotes}
                         onChange={(e) => setBillNotes(e.target.value)}
                       />
@@ -1047,9 +1152,32 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
 
                     <button type="submit" className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem' }}>
                       <Save size={14} />
-                      <span>Save Billing & Tariff Update</span>
+                      <span>Apply Quota, Billed Amount & Tariff</span>
                     </button>
                   </form>
+                </div>
+
+                {/* Reset Meter Data Danger Zone */}
+                <div style={{ background: '#fef2f2', padding: '16px 20px', borderRadius: '16px', border: '1px solid #fecaca', marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                    <div>
+                      <h4 style={{ fontSize: '0.9rem', fontWeight: 900, color: 'var(--red)', marginBottom: '3px' }}>
+                        ⚠️ Erase & Reset All Past Meter Data
+                      </h4>
+                      <p style={{ fontSize: '0.78rem', color: '#991b1b', margin: 0 }}>
+                        Permanently erases all historical telemetry, clears session records, resets counters to zero, and signals the ESP32 hardware to clear its internal memory on next sync.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleResetAllMeterData}
+                      className="btn btn-danger"
+                      style={{ padding: '8px 18px', fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+                    >
+                      <Trash2 size={14} />
+                      <span>Erase All Meter Data</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Online / Offline Status Logs */}

@@ -20,8 +20,12 @@ CREATE TABLE IF NOT EXISTS devices (
     assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     unit_price NUMERIC(8,2) DEFAULT 8.50,
     allowed_units NUMERIC(10,3) DEFAULT 100.00,
+    recharge_amount NUMERIC(10,2) DEFAULT 1000.00, -- Prepaid funds credited
+    locked_billed_cost NUMERIC(10,2) DEFAULT 0.00, -- Locked cost from previous tariffs
+    locked_billed_energy NUMERIC(12,4) DEFAULT 0.00, -- Locked kWh from previous tariffs
     overdue_amount NUMERIC(10,2) DEFAULT 0.00,
     paid_amount NUMERIC(10,2) DEFAULT 0.00,
+    needs_reset BOOLEAN DEFAULT false, -- Set by Admin to wipe meter
     is_active BOOLEAN DEFAULT true,
     last_seen TIMESTAMP WITH TIME ZONE,
     last_online_at TIMESTAMP WITH TIME ZONE,
@@ -43,7 +47,20 @@ CREATE TABLE IF NOT EXISTS telemetry (
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. Billing & Tariff Audit Records Table
+-- 4. Load Sessions Table (Per-session load consumption & cost)
+CREATE TABLE IF NOT EXISTS load_sessions (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    stop_time TIMESTAMP WITH TIME ZONE,
+    duration_seconds INTEGER DEFAULT 0,
+    peak_power NUMERIC(8,2) DEFAULT 0.00,
+    energy_kwh NUMERIC(10,4) DEFAULT 0.00,
+    session_cost NUMERIC(10,2) DEFAULT 0.00,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. Billing & Tariff Audit Records Table
 CREATE TABLE IF NOT EXISTS billing_records (
     id SERIAL PRIMARY KEY,
     device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -54,7 +71,7 @@ CREATE TABLE IF NOT EXISTS billing_records (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Online / Offline Status Transition Logs Table
+-- 6. Online / Offline Status Transition Logs Table
 CREATE TABLE IF NOT EXISTS device_status_logs (
     id SERIAL PRIMARY KEY,
     device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -65,5 +82,6 @@ CREATE TABLE IF NOT EXISTS device_status_logs (
 -- Indexes for lightning fast queries
 CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
+CREATE INDEX IF NOT EXISTS idx_load_sessions_device ON load_sessions(device_id, start_time DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_device ON billing_records(device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_status_logs_device ON device_status_logs(device_id, timestamp DESC);
