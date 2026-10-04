@@ -4,7 +4,7 @@
   "description": "Unified ESP32 Power Meter full-stack app (Node.js API + React frontend) for Render",
   "main": "backend/server.js",
   "scripts": {
-    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "build": "npm --prefix frontend install --include=dev && npm --prefix frontend run build",
     "start": "node backend/server.js",
     "dev": "node backend/server.js"
   },
