@@ -380,6 +380,62 @@ app.post('/api/admin/users', verifyToken, requireAdmin, async (req, res) => {
   }
 });
 
+// Update user credentials & details (Admin)
+app.put('/api/admin/users/:id', verifyToken, requireAdmin, async (req, res) => {
+  const { username, email, password, role } = req.body;
+  const userId = req.params.id;
+
+  try {
+    let queryText = '';
+    let params = [];
+
+    if (password && password.trim().length > 0) {
+      const hash = await bcrypt.hash(password.trim(), 10);
+      queryText = `
+        UPDATE users
+        SET username = COALESCE($1, username),
+            email = COALESCE($2, email),
+            password_hash = $3,
+            role = COALESCE($4, role)
+        WHERE id = $5
+        RETURNING id, username, email, role, created_at
+      `;
+      params = [
+        username ? username.trim() : null,
+        email ? email.trim().toLowerCase() : null,
+        hash,
+        role || null,
+        userId
+      ];
+    } else {
+      queryText = `
+        UPDATE users
+        SET username = COALESCE($1, username),
+            email = COALESCE($2, email),
+            role = COALESCE($3, role)
+        WHERE id = $4
+        RETURNING id, username, email, role, created_at
+      `;
+      params = [
+        username ? username.trim() : null,
+        email ? email.trim().toLowerCase() : null,
+        role || null,
+        userId
+      ];
+    }
+
+    const result = await db.query(queryText, params);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ success: true, user: result.rows[0] });
+  } catch (err) {
+    console.error('User update error:', err);
+    res.status(400).json({ error: 'Failed to update user. Username or email may already be taken.' });
+  }
+});
+
 // Delete user
 app.delete('/api/admin/users/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
@@ -387,6 +443,70 @@ app.delete('/api/admin/users/:id', verifyToken, requireAdmin, async (req, res) =
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// Reject public student registration
+app.post('/api/auth/register', (req, res) => {
+  res.status(403).json({
+    error: 'Self-registration is disabled. Accounts must be provisioned by the Administrator.'
+  });
+});
+
+// Database Management: Overview & Health stats (Admin)
+app.get('/api/admin/database/overview', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const [userCountRes, devCountRes, telCountRes, verRes, timeRes] = await Promise.all([
+      db.query('SELECT COUNT(*) as count FROM users'),
+      db.query('SELECT COUNT(*) as count FROM devices'),
+      db.query('SELECT COUNT(*) as count, MIN(recorded_at) as first_log, MAX(recorded_at) as last_log FROM telemetry'),
+      db.query('SELECT version()'),
+      db.query('SELECT NOW() as db_time')
+    ]);
+
+    res.json({
+      status: 'Connected',
+      version: verRes.rows[0]?.version || 'PostgreSQL',
+      dbTime: timeRes.rows[0]?.db_time,
+      totalUsers: parseInt(userCountRes.rows[0]?.count || 0),
+      totalDevices: parseInt(devCountRes.rows[0]?.count || 0),
+      totalTelemetryLogs: parseInt(telCountRes.rows[0]?.count || 0),
+      firstLog: telCountRes.rows[0]?.first_log,
+      lastLog: telCountRes.rows[0]?.last_log
+    });
+  } catch (err) {
+    console.error('Database overview error:', err);
+    res.status(500).json({ error: 'Failed to query database stats' });
+  }
+});
+
+// Database Management: Inspect raw telemetry records in DB (Admin)
+app.get('/api/admin/database/telemetry-logs', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const result = await db.query(
+      `SELECT t.id, t.device_id, d.name as device_name, t.voltage, t.current, t.power, t.pf, t.energy, t.cost, t.is_load_on, t.recorded_at
+       FROM telemetry t
+       LEFT JOIN devices d ON t.device_id = d.id
+       ORDER BY t.recorded_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    res.json({ logs: result.rows });
+  } catch (err) {
+    console.error('Database telemetry query error:', err);
+    res.status(500).json({ error: 'Failed to retrieve telemetry logs' });
+  }
+});
+
+// Delete device (Admin)
+app.delete('/api/admin/devices/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    await db.query('DELETE FROM devices WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete device' });
   }
 });
 

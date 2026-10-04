@@ -19,7 +19,7 @@ import {
   Calendar
 } from 'lucide-react';
 
-export default function Dashboard({ user, onLogout, onSwitchToAdmin, showToast }) {
+export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToLanding, showToast }) {
   const [meters, setMeters] = useState([]);
   const [selectedMeterId, setSelectedMeterId] = useState('');
   const [liveData, setLiveData] = useState(null);
@@ -258,6 +258,18 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, showToast }
             <span>{user.username}</span>
             <span className={`badge-role role-${user.role}`}>{user.role}</span>
           </div>
+
+          {onSwitchToLanding && (
+            <button
+              onClick={onSwitchToLanding}
+              className="btn btn-outline"
+              style={{ fontSize: '0.8rem', padding: '7px 12px' }}
+              title="View System Overview & Hardware Specs"
+            >
+              <Layers size={14} />
+              <span>Intro</span>
+            </button>
+          )}
 
           {user.role === 'admin' && (
             <button

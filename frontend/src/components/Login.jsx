@@ -1,11 +1,20 @@
 import React, { useState } from 'react';
-import { getApiBase, setApiBase, setAuth } from '../api';
-import { Zap, ShieldCheck, AlertCircle } from 'lucide-react';
+import { getApiBase, setAuth } from '../api';
+import {
+  Zap,
+  Lock,
+  Mail,
+  Eye,
+  EyeOff,
+  AlertCircle,
+  ArrowLeft,
+  ShieldCheck
+} from 'lucide-react';
 
-export default function Login({ onLoginSuccess, showToast }) {
+export default function Login({ onLoginSuccess, onGoBackToLanding, showToast }) {
   const [usernameOrEmail, setUsernameOrEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [backendUrl, setBackendUrlState] = useState(getApiBase());
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -14,7 +23,7 @@ export default function Login({ onLoginSuccess, showToast }) {
     setError('');
     setLoading(true);
 
-    const targetUrl = setApiBase(backendUrl);
+    const targetUrl = getApiBase();
 
     try {
       const res = await fetch(`${targetUrl}/api/auth/login`, {
@@ -25,142 +34,122 @@ export default function Login({ onLoginSuccess, showToast }) {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Authentication failed');
+        throw new Error(data.error || 'Authentication failed. Please verify your credentials.');
       }
 
       setAuth(data.token, data.user);
       showToast(`Welcome back, ${data.user.username}!`);
       onLoginSuccess(data.user);
     } catch (err) {
-      setError(err.message || 'Cannot connect to backend server. Verify your URL.');
+      setError(err.message || 'Cannot connect to authentication service.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: '85vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px'
-      }}
-    >
-      <div className="glass" style={{ width: '100%', maxWidth: '440px', padding: '36px 32px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '26px' }}>
-          <div
-            style={{
-              width: '54px',
-              height: '54px',
-              borderRadius: '16px',
-              background: 'linear-gradient(135deg, var(--cyan), var(--blue))',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'white',
-              marginBottom: '12px',
-              boxShadow: '0 0 24px var(--cyan-glow)'
-            }}
+    <div className="login-page-wrapper">
+      {/* Ambient Animated Orbs */}
+      <div className="ambient-orb orb-1"></div>
+      <div className="ambient-orb orb-2"></div>
+      <div className="ambient-orb orb-3"></div>
+
+      <div className="login-card glass">
+        {/* Back to Home Button */}
+        {onGoBackToLanding && (
+          <button
+            onClick={onGoBackToLanding}
+            className="back-btn"
+            title="Return to System Overview"
           >
-            <Zap size={28} />
+            <ArrowLeft size={16} />
+            <span>Overview & Specs</span>
+          </button>
+        )}
+
+        {/* Brand Icon & Header */}
+        <div className="login-header">
+          <div className="login-icon-box">
+            <Zap size={30} className="login-zap-icon" />
           </div>
-          <h2 style={{ fontSize: '1.45rem', fontWeight: 800, letterSpacing: '-0.5px' }}>
-            Energy Cloud Portal
-          </h2>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            ESP32 + PZEM-004T Cloud Intelligence
+          <h2 className="login-title">GRIDSENSE ACCESS</h2>
+          <p className="login-subtitle">
+            Secure Smart Energy Telemetry & Control Portal
           </p>
         </div>
 
+        {/* Error Notification */}
         {error && (
-          <div
-            style={{
-              background: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid rgba(239, 68, 68, 0.35)',
-              color: '#fca5a5',
-              padding: '10px 14px',
-              borderRadius: '12px',
-              fontSize: '0.84rem',
-              marginBottom: '16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            <AlertCircle size={16} />
+          <div className="login-error-banner">
+            <AlertCircle size={18} style={{ flexShrink: 0 }} />
             <span>{error}</span>
           </div>
         )}
 
-        <form onSubmit={handleSubmit}>
-          <div className="input-wrap" style={{ marginBottom: '14px' }}>
+        {/* Sign In Form */}
+        <form onSubmit={handleSubmit} className="login-form">
+          <div className="input-group">
             <label htmlFor="loginEmail">Email or Username</label>
-            <input
-              id="loginEmail"
-              type="text"
-              placeholder="admin@energymeter.com"
-              value={usernameOrEmail}
-              onChange={(e) => setUsernameOrEmail(e.target.value)}
-              required
-            />
+            <div className="input-with-icon">
+              <Mail size={18} className="field-icon" />
+              <input
+                id="loginEmail"
+                type="text"
+                placeholder="Enter your username or email"
+                value={usernameOrEmail}
+                onChange={(e) => setUsernameOrEmail(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </div>
           </div>
 
-          <div className="input-wrap" style={{ marginBottom: '18px' }}>
+          <div className="input-group">
             <label htmlFor="loginPassword">Password</label>
-            <input
-              id="loginPassword"
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-
-          <div className="input-wrap" style={{ marginBottom: '22px' }}>
-            <label htmlFor="backendUrl" style={{ fontSize: '0.7rem', color: '#64748b' }}>
-              Render Backend URL
-            </label>
-            <input
-              id="backendUrl"
-              type="url"
-              placeholder="https://energy-backend-gwex.onrender.com"
-              value={backendUrl}
-              onChange={(e) => setBackendUrlState(e.target.value)}
-              style={{ fontSize: '0.82rem', padding: '9px 12px', color: 'var(--cyan)' }}
-            />
+            <div className="input-with-icon">
+              <Lock size={18} className="field-icon" />
+              <input
+                id="loginPassword"
+                type={showPassword ? 'text' : 'password'}
+                placeholder="Enter your password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+              <button
+                type="button"
+                className="toggle-password-btn"
+                onClick={() => setShowPassword(!showPassword)}
+                tabIndex="-1"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </div>
 
           <button
             type="submit"
-            className="btn btn-primary"
-            style={{ width: '100%' }}
+            className="btn btn-primary login-submit-btn"
             disabled={loading}
           >
-            {loading ? 'Authenticating...' : 'Sign In'}
+            {loading ? (
+              <span className="submit-loading-text">
+                <span className="spinner-dot"></span> Authenticating...
+              </span>
+            ) : (
+              <span>Sign In to Dashboard</span>
+            )}
           </button>
         </form>
 
-        <div
-          style={{
-            marginTop: '24px',
-            padding: '14px',
-            borderRadius: '14px',
-            background: 'rgba(255, 255, 255, 0.03)',
-            border: '1px solid rgba(255, 255, 255, 0.06)',
-            fontSize: '0.78rem',
-            color: 'var(--text-secondary)',
-            lineHeight: 1.5
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)', marginBottom: '4px', fontWeight: 700 }}>
-            <ShieldCheck size={14} style={{ color: 'var(--emerald)' }} />
-            <span>Default Seed Credentials:</span>
-          </div>
-          <div>• <strong>Admin:</strong> admin@energymeter.com / admin123</div>
-          <div>• <strong>User:</strong> praveen@energymeter.com / user123</div>
+        {/* Security & Registration Policy Notice */}
+        <div className="login-policy-box">
+          <ShieldCheck size={16} style={{ color: 'var(--cyan)', flexShrink: 0 }} />
+          <span>
+            Institutional access is strictly managed. Student & consumer accounts are provisioned exclusively by the Administrator.
+          </span>
         </div>
       </div>
     </div>
