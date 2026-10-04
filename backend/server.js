@@ -133,21 +133,34 @@ app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
       ]
     );
 
-    // 2. Track load session if reported
-    if (session && session.startTime) {
-      await db.query(
-        `INSERT INTO load_sessions (device_id, start_time, stop_time, duration_seconds, peak_power, energy_kwh, session_cost)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          req.device.id,
-          session.startTime,
-          session.stopTime || null,
-          parseInt(session.durationSeconds) || 0,
-          parseFloat(session.peakPower) || 0,
-          parseFloat(session.energy) || 0,
-          (parseFloat(session.energy) || 0) * unitPrice
-        ]
+    // 2. Track completed load session when load was cutted (recorded once per session)
+    if (session && session.startTime && session.stopTime) {
+      const sessEnergy = Math.max(0, parseFloat(session.energy) || 0);
+      const sessCost = session.cost !== undefined ? parseFloat(session.cost) : (sessEnergy * unitPrice);
+
+      // Deduplicate: avoid duplicate insertion
+      const existing = await db.query(
+        `SELECT id FROM load_sessions 
+         WHERE device_id = $1 AND start_time = $2 
+         LIMIT 1`,
+        [req.device.id, session.startTime]
       );
+
+      if (existing.rows.length === 0) {
+        await db.query(
+          `INSERT INTO load_sessions (device_id, start_time, stop_time, duration_seconds, peak_power, energy_kwh, session_cost)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            req.device.id,
+            session.startTime,
+            session.stopTime,
+            parseInt(session.durationSeconds) || 0,
+            parseFloat(session.peakPower) || 0,
+            sessEnergy,
+            sessCost
+          ]
+        );
+      }
     }
 
     // 3. Update device last_seen timestamp & local_ip
@@ -406,28 +419,7 @@ app.get('/api/meters/:id/sessions', verifyToken, async (req, res) => {
       [deviceId]
     );
 
-    let sessions = sessRes.rows;
-
-    // Fallback/synthesize if no explicit sessions logged yet
-    if (sessions.length === 0) {
-      const telRes = await db.query(
-        `SELECT recorded_at as start_time, power as peak_power, energy as energy_kwh, cost as session_cost
-         FROM telemetry
-         WHERE device_id = $1 AND is_load_on = true
-         ORDER BY recorded_at DESC LIMIT 10`,
-        [deviceId]
-      );
-      sessions = telRes.rows.map((row, idx) => ({
-        id: idx + 1,
-        device_id: deviceId,
-        start_time: row.start_time,
-        stop_time: null,
-        duration_seconds: 3600,
-        peak_power: parseFloat(row.peak_power) || 0,
-        energy_kwh: parseFloat(row.energy_kwh) || 0,
-        session_cost: parseFloat(row.session_cost) || 0
-      }));
-    }
+    const sessions = sessRes.rows;
 
     const totalSessions = sessions.length;
     const totalSessionUnits = sessions.reduce((acc, s) => acc + (parseFloat(s.energy_kwh) || 0), 0);

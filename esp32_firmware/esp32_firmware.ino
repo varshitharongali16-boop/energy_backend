@@ -109,6 +109,11 @@ int sessionCount = 0;
 float sessionStartEnergy = 0.0;
 float sessionPeakPower = 0.0;
 
+// Pending session tracking to guarantee discrete, non-cumulative sending
+bool hasPendingSessionToSend = false;
+LoadSession pendingSessionData;
+unsigned long lastHourlyLoadSync = 0;
+
 // ============================================================
 // TFT SCREEN ROTATION & TIMERS
 // ============================================================
@@ -143,6 +148,7 @@ const unsigned long SETTINGS_SAVE_INTERVAL = 30000; // Auto-save every 30s
 // ============================================================
 // TIME HELPERS
 // ============================================================
+// Returns time in strict 24-hour format (HH:MM:SS)
 String getCurrentTime() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 100)) {
@@ -159,6 +165,7 @@ String getCurrentTime() {
   return String(buffer);
 }
 
+// Session running time counting up from load start time onwards (HH:MM:SS)
 String getRunningTime() {
   if (!loadON) return "00:00:00";
   unsigned long seconds = (millis() - loadStartMillis) / 1000;
@@ -168,6 +175,44 @@ String getRunningTime() {
   char buffer[20];
   sprintf(buffer, "%02lu:%02lu:%02lu", h, m, s);
   return String(buffer);
+}
+
+// Calculates remaining run time with the current active load before balance runs out (to avoid overdue)
+String getRemainingTime() {
+  if (!loadON || power < LOAD_OFF_THRESHOLD) {
+    return "STANDBY";
+  }
+  if (overdueAmount > 0 || accountBalance <= 0) {
+    return "OVERDUE";
+  }
+  if (unitPrice <= 0) {
+    return ">99 hrs";
+  }
+
+  // Hourly burn rate in Rs/hr = (Watts / 1000) * unitPrice
+  float hourlyCost = (power / 1000.0) * unitPrice;
+  if (hourlyCost <= 0.0001) {
+    return ">99 hrs";
+  }
+
+  float hoursLeft = accountBalance / hourlyCost;
+  unsigned long totalSec = (unsigned long)(hoursLeft * 3600.0);
+
+  if (totalSec >= 360000UL) { // > 100 hours
+    return ">99 hrs";
+  }
+
+  unsigned long h = totalSec / 3600;
+  unsigned long m = (totalSec % 3600) / 60;
+  unsigned long s = totalSec % 60;
+
+  char buf[20];
+  if (h > 0) {
+    sprintf(buf, "%luh %lum", h, m);
+  } else {
+    sprintf(buf, "%lum %lus", m, s);
+  }
+  return String(buf);
 }
 
 // ============================================================
@@ -221,16 +266,26 @@ void readPZEM() {
     if (power >= LOAD_ON_THRESHOLD) loadON = true;
   }
 
-  // Load Session Started
+  // Load Session Started (Transition OFF -> ON)
   if (loadON && !previousLoadON) {
     loadStartMillis = millis();
     loadStartTime = getCurrentTime();
     sessionStartEnergy = energy;
     sessionPeakPower = power;
-    Serial.println("[PZEM] Load Session Started at: " + loadStartTime);
+    lastHourlyLoadSync = millis(); // Reset hourly milestone timer
+
+    // Persist active session in NVS for power loss protection
+    prefs.putBool("sess_active", true);
+    prefs.putString("sess_start", loadStartTime);
+    prefs.putFloat("sess_start_e", sessionStartEnergy);
+    prefs.putFloat("sess_last_e", energy);
+    prefs.putFloat("sess_peak_p", sessionPeakPower);
+
+    Serial.println("[PZEM] Load Connected! Start Time (24H): " + loadStartTime + ". Syncing cloud...");
+    doCloudSync();
   }
 
-  // Load Session Stopped
+  // Load Session Stopped (Transition ON -> OFF)
   if (!loadON && previousLoadON) {
     loadStopTime = getCurrentTime();
     unsigned long durSec = (millis() - loadStartMillis) / 1000;
@@ -250,7 +305,15 @@ void readPZEM() {
     sessionHistory[0].sessionCost = sessCost;
     if (sessionCount < MAX_SESSIONS) sessionCount++;
 
-    Serial.printf("[PZEM] Load Stopped. Duration: %lus, Energy: %.3fkWh, Cost: Rs %.2f\n", durSec, sessEnergy, sessCost);
+    // Flag completed session to send to cloud database ONCE
+    pendingSessionData = sessionHistory[0];
+    hasPendingSessionToSend = true;
+
+    // Clear active session in NVS (clean stop)
+    prefs.putBool("sess_active", false);
+
+    Serial.printf("[PZEM] Load Cut! Final Session: %.3fkWh, Rs %.2f. Syncing cloud...\n", sessEnergy, sessCost);
+    doCloudSync();
   }
 }
 
@@ -284,14 +347,15 @@ void doCloudSync() {
     payload += "\"correctionNum\":" + String(CORRECTION_NUM, 4) + ",";
     payload += "\"localIp\":\"" + WiFi.localIP().toString() + "\"";
 
-    // If a session just ended, attach it
-    if (sessionCount > 0 && !loadON) {
+    // If a session was recorded (upon load cut or power loss recovery), attach it ONCE
+    if (hasPendingSessionToSend) {
       payload += ",\"session\":{";
-      payload += "\"startTime\":\"" + sessionHistory[0].startTime + "\",";
-      payload += "\"stopTime\":\"" + sessionHistory[0].stopTime + "\",";
-      payload += "\"durationSeconds\":" + String(sessionHistory[0].durationSec) + ",";
-      payload += "\"peakPower\":" + String(sessionHistory[0].peakPower, 1) + ",";
-      payload += "\"energy\":" + String(sessionHistory[0].energyKWh, 4);
+      payload += "\"startTime\":\"" + pendingSessionData.startTime + "\",";
+      payload += "\"stopTime\":\"" + pendingSessionData.stopTime + "\",";
+      payload += "\"durationSeconds\":" + String(pendingSessionData.durationSec) + ",";
+      payload += "\"peakPower\":" + String(pendingSessionData.peakPower, 1) + ",";
+      payload += "\"energy\":" + String(pendingSessionData.energyKWh, 4) + ",";
+      payload += "\"cost\":" + String(pendingSessionData.sessionCost, 2);
       payload += "}";
     }
 
@@ -299,6 +363,12 @@ void doCloudSync() {
 
     int httpCode = http.POST(payload);
     if (httpCode == HTTP_CODE_OK) {
+      // Pending session was successfully recorded in PostgreSQL database
+      if (hasPendingSessionToSend) {
+        hasPendingSessionToSend = false;
+        Serial.println("[Cloud] Completed session saved to database successfully.");
+      }
+
       String response = http.getString();
       Serial.println("[Cloud] Synchronized successfully with Render backend.");
 
@@ -380,10 +450,15 @@ void doCloudSync() {
   }
 }
 
-void sendTelemetryToCloud() {
+// Checks if 1 hour of continuous active load has elapsed, and triggers cloud sync
+void checkHourlyLoadSync() {
+  if (!loadON) return;
   if (WiFi.status() != WL_CONNECTED) return;
-  if (millis() - lastCloudSync < CLOUD_SYNC_INTERVAL) return;
-  doCloudSync();
+  if (millis() - lastHourlyLoadSync >= 3600000UL) {
+    lastHourlyLoadSync = millis();
+    Serial.println("[PZEM] 1 Hour of Active Load elapsed. Sending hourly cloud update...");
+    doCloudSync();
+  }
 }
 
 // ============================================================
@@ -539,15 +614,53 @@ void drawScreenTime() {
   tft.fillScreen(BLACK);
   drawHeader("LOAD TIME", CYAN);
 
-  drawCard(10, 48, 145, 55, "START TIME", loadStartTime, "", NAVY, GREEN);
-  drawCard(165, 48, 145, 55, "CURRENT TIME", getCurrentTime(), "", NAVY, CYAN);
-  drawCard(10, 118, 145, 55, "RUNNING TIME", getRunningTime(), "", DARKGREEN, YELLOW);
-  drawCard(165, 118, 145, 55, "LAST STOP", loadStopTime, "", DARKGRAY, LIGHTGRAY);
+  // Card 1: Start Time (strict 24-hour format HH:MM:SS)
+  drawCard(10, 46, 145, 56, "START (24H)", loadStartTime, "", NAVY, GREEN);
 
-  tft.setTextColor(loadON ? GREEN : GRAY, BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(35, 200);
-  tft.print(loadON ? "LOAD IS RUNNING" : "LOAD IS STANDBY");
+  // Card 2: Running Time (counting up from load start time)
+  drawCard(165, 46, 145, 56, "RUNNING TIME", getRunningTime(), "", DARKGREEN, YELLOW);
+
+  // Card 3: Remaining Time Without Overdue (for current balance & load)
+  uint16_t timeColor = (overdueAmount > 0 || accountBalance <= 0) ? RED : CYAN;
+  drawCard(10, 108, 145, 56, "TIME TO DUE", getRemainingTime(), "", NAVY, timeColor);
+
+  // Card 4: Hourly Consumption Burn Rate
+  float hourlyRate = (power / 1000.0) * unitPrice;
+  String burnStr = loadON ? ("Rs " + String(hourlyRate, 2)) : "Rs 0.00";
+  drawCard(165, 108, 145, 56, "HOURLY BURN", burnStr, "/hr", DARKGRAY, ORANGE);
+
+  // Bottom Status Banner
+  if (loadON) {
+    tft.fillRoundRect(10, 172, 300, 56, 8, DARKGREEN);
+    tft.drawRoundRect(10, 172, 300, 56, 8, GREEN);
+
+    tft.setTextColor(GREEN, DARKGREEN);
+    tft.setTextSize(2);
+    tft.setCursor(20, 180);
+    tft.print("LOAD ACTIVE: ");
+    tft.print(power, 1);
+    tft.print(" W");
+
+    tft.setTextColor(WHITE, DARKGREEN);
+    tft.setTextSize(1);
+    tft.setCursor(20, 204);
+    tft.print("Bal: Rs ");
+    tft.print(accountBalance, 2);
+    tft.print(" | Safe from Overdue");
+  } else {
+    tft.fillRoundRect(10, 172, 300, 56, 8, DARKGRAY);
+    tft.drawRoundRect(10, 172, 300, 56, 8, LIGHTGRAY);
+
+    tft.setTextColor(LIGHTGRAY, DARKGRAY);
+    tft.setTextSize(2);
+    tft.setCursor(20, 180);
+    tft.print("LOAD STANDBY");
+
+    tft.setTextColor(CYAN, DARKGRAY);
+    tft.setTextSize(1);
+    tft.setCursor(20, 204);
+    tft.print("Session starts when load connects");
+  }
 }
 
 void drawScreenSummary() {
@@ -737,6 +850,10 @@ void checkWiFi() {
 // REST API (FOR LOCAL LIVE READINGS & SESSIONS)
 // ============================================================
 void handleAPI() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+
   String json = "{";
   json += "\"voltage\":" + String(loadON ? voltage : 0, 2);
   json += ",\"current\":" + String(loadON ? current : 0, 3);
@@ -755,6 +872,8 @@ void handleAPI() {
   json += ",\"stopTime\":\"" + loadStopTime + "\"";
   json += ",\"currentTime\":\"" + getCurrentTime() + "\"";
   json += ",\"runningTime\":\"" + getRunningTime() + "\"";
+  json += ",\"remainingTime\":\"" + getRemainingTime() + "\"";
+  json += ",\"hourlyBurn\":" + String((power / 1000.0) * unitPrice, 2);
   json += ",\"correctionNum\":" + String(CORRECTION_NUM, 4);
 
   // Sessions array
@@ -779,10 +898,9 @@ void handleAPI() {
 
 // ============================================================
 // LOCAL WEB PAGE (READ-ONLY CONSUMER LIVE VIEW)
-// EXACT SAME MODERN UI & STRUCTURE AS THE USER CLOUD LOGIN PORTAL
+// STORED IN PROGMEM FLASH TO PREVENT RAM FRAGMENTATION
 // ============================================================
-String htmlPage() {
-  return R"rawliteral(<!DOCTYPE html>
+const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1008,6 +1126,7 @@ tr:hover td { background: #f8fafc; }
       <div class="card-foot">
         <span>Load Start: <strong id="startTime" style="color:var(--text-main)">--:--:--</strong></span>
         <span>Active Runtime: <strong id="runningTime" style="color:var(--cyan)">00:00:00</strong></span>
+        <span>Time to Due: <strong id="remainingTime" style="color:var(--emerald)">STANDBY</strong></span>
       </div>
     </div>
 
@@ -1150,6 +1269,10 @@ async function update() {
     document.getElementById('runningTime').innerText = d.runningTime;
     document.getElementById('stopVal').innerText = d.stopTime;
     document.getElementById('startTime').innerText = d.startTime;
+    if (document.getElementById('remainingTime')) {
+      document.getElementById('remainingTime').innerText = d.remainingTime || 'STANDBY';
+      document.getElementById('remainingTime').style.color = (d.remainingTime === 'OVERDUE') ? 'var(--red)' : 'var(--emerald)';
+    }
 
     // Overdue alerts
     const overdueBanner = document.getElementById('overdueBanner');
@@ -1230,13 +1353,19 @@ update();
 </script>
 </body>
 </html>)rawliteral";
-}
 
 // ============================================================
 // WEB SERVER ENDPOINTS
 // ============================================================
 void handleHome() {
-  server.send(200, "text/html", htmlPage());
+  server.send_P(200, "text/html", HTML_PAGE);
+}
+
+void handleOptions() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+  server.send(204);
 }
 
 // Local settings update attempt is blocked with 403 Forbidden
@@ -1261,8 +1390,10 @@ void handleSyncNow() {
 void startWebServer() {
   server.on("/", HTTP_GET, handleHome);
   server.on("/api", HTTP_GET, handleAPI);
+  server.on("/api", HTTP_OPTIONS, handleOptions);
   server.on("/sync-now", HTTP_GET, handleSyncNow);
   server.on("/sync-now", HTTP_POST, handleSyncNow);
+  server.on("/sync-now", HTTP_OPTIONS, handleOptions);
   server.on("/settings", HTTP_POST, handleSettingsForbidden);
   server.on("/reset", HTTP_POST, handleResetForbidden);
   server.begin();
@@ -1308,6 +1439,43 @@ void setup() {
   lockedBilledCost   = prefs.getFloat("lockCost", 0.0);
   lockedBilledEnergy = prefs.getFloat("lockEnergy", 0.0);
 
+  // Power Loss Recovery: Check if a session was active when power was lost
+  bool wasActiveSession = prefs.getBool("sess_active", false);
+  if (wasActiveSession) {
+    String recStart = prefs.getString("sess_start", "--:--:--");
+    float recStartE = prefs.getFloat("sess_start_e", 0.0);
+    float recLastE  = prefs.getFloat("sess_last_e", 0.0);
+    float recPeakP  = prefs.getFloat("sess_peak_p", 0.0);
+
+    // Read hardware PZEM register for final non-volatile energy reading
+    float currentPzemE = pzem.energy();
+    float finalE = (!isnan(currentPzemE) && currentPzemE >= recStartE) ? currentPzemE : recLastE;
+    float recoveredEnergy = finalE - recStartE;
+    if (recoveredEnergy < 0) recoveredEnergy = 0;
+    float recoveredCost = recoveredEnergy * unitPrice;
+
+    Serial.printf("[PowerRecovery] Interrupted session recovered from NVS! Start: %s, Units: %.3fkWh, Cost: Rs %.2f\n",
+                  recStart.c_str(), recoveredEnergy, recoveredCost);
+
+    pendingSessionData.startTime = recStart;
+    pendingSessionData.stopTime = "PWR-CUT";
+    pendingSessionData.durationSec = 0;
+    pendingSessionData.peakPower = recPeakP;
+    pendingSessionData.energyKWh = recoveredEnergy;
+    pendingSessionData.sessionCost = recoveredCost;
+    hasPendingSessionToSend = true;
+
+    // Push into circular buffer
+    for (int i = MAX_SESSIONS - 1; i > 0; i--) {
+      sessionHistory[i] = sessionHistory[i - 1];
+    }
+    sessionHistory[0] = pendingSessionData;
+    if (sessionCount < MAX_SESSIONS) sessionCount++;
+
+    // Clear interrupted flag now that it's recovered
+    prefs.putBool("sess_active", false);
+  }
+
   // Connect to WiFi
   bool connected = connectWiFi();
   if (connected) {
@@ -1344,7 +1512,7 @@ void setup() {
 }
 
 // ============================================================
-// MAIN LOOP
+// MAIN LOOP (STRICT EVENT-DRIVEN CLOUD SYNC & NON-BLOCKING LOCAL SERVER)
 // ============================================================
 void loop() {
   // 1. Handle local browser client requests
@@ -1359,17 +1527,21 @@ void loop() {
     readPZEM();
   }
 
-  // 4. Periodic Cloud Telemetry Sync to Render (Hourly or Configured Interval)
-  sendTelemetryToCloud();
+  // 4. Hourly telemetry sync ONLY while load is active (Every 1 hour)
+  checkHourlyLoadSync();
 
   // 5. Periodic TFT Screen Updates & Transitions
   updateTFTScreen();
 
-  // 6. Periodically Persist Settings (Every 30s)
+  // 6. Periodically Persist Settings & Active Session State (Every 30s)
   if (millis() - lastSettingsSave >= SETTINGS_SAVE_INTERVAL) {
     lastSettingsSave = millis();
     prefs.putFloat("price", unitPrice);
     prefs.putFloat("recharge", rechargeAmount);
+    if (loadON) {
+      prefs.putFloat("sess_last_e", energy);
+      prefs.putFloat("sess_peak_p", sessionPeakPower);
+    }
   }
 
   delay(5);
