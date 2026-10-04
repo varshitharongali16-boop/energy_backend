@@ -116,7 +116,7 @@ sequenceDiagram
 ### Self-Service Payment Characteristics:
 1. **Zero Admin Dependency:** Consumers recharge directly via UPI (Google Pay, PhonePe, Paytm), Netbanking across all Indian banks (SBI, HDFC, ICICI, Axis), or Debit/Credit Cards.
 2. **Cryptographic Validation:** Backend computes an HMAC-SHA256 digest of `${order_id}|${payment_id}` using the secret key to thwart tampering.
-3. **Resilient Sandbox Fallback:** If internet interruptions or sandbox credentials experience network timeouts, an integrated Instant Sandbox Demo Credit bypass permits verification testing.
+3. **Real-Time Additive Balance:** Verified transactions automatically sum into the user's available balance pool and instantly liquidate any outstanding overdue debt.
 
 ---
 

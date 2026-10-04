@@ -168,53 +168,6 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     return () => clearInterval(interval);
   }, [selectedMeterId]);
 
-  const handleDirectSimulatedRecharge = async (amountToPay) => {
-    const amt = parseFloat(amountToPay || rechargeAmountInput);
-    if (isNaN(amt) || amt < 1) {
-      showToast('Please enter a valid recharge amount (minimum ₹1.00)');
-      return;
-    }
-
-    setRechargeLoading(true);
-    try {
-      showToast('Crediting ₹' + amt.toFixed(2) + ' directly to meter balance...');
-      const verifyRes = await fetchApi('/api/payments/verify', {
-        method: 'POST',
-        body: JSON.stringify({
-          razorpay_order_id: `order_test_${Date.now()}`,
-          razorpay_payment_id: `pay_direct_${Date.now()}`,
-          meterId: selectedMeterId,
-          amount: amt
-        })
-      });
-      const verifyData = await verifyRes.json();
-      if (verifyRes.ok) {
-        showToast(`🎉 ₹${amt.toFixed(2)} credited successfully to meter!`);
-        setShowRechargeModal(false);
-        const liveRes = await fetchApi(`/api/meters/${selectedMeterId}/live`);
-        const liveJson = await liveRes.json();
-        if (liveRes.ok) {
-          setLiveData(liveJson.live);
-          setAnalytics(liveJson.analytics);
-          setDeviceInfo(liveJson.device);
-        }
-        const rchRes = await fetchApi(`/api/meters/${selectedMeterId}/recharges`);
-        const rchJson = await rchRes.json();
-        if (rchRes.ok && rchJson.transactions) {
-          setRechargeHistory(rchJson.transactions);
-        }
-        // Immediately notify ESP32 local IP to refresh hardware display
-        triggerLocalEspSync(deviceInfo?.local_ip || deviceInfo?.localIp);
-      } else {
-        showToast(verifyData.error || 'Recharge failed');
-      }
-    } catch (err) {
-      showToast('Error processing balance recharge');
-    } finally {
-      setRechargeLoading(false);
-    }
-  };
-
   const triggerLocalEspSync = async (ip) => {
     if (!ip) return;
     try {
@@ -237,8 +190,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     try {
       const isLoaded = await loadRazorpayScript();
       if (!isLoaded) {
-        showToast('Connecting directly to secure balance recharge...');
-        await handleDirectSimulatedRecharge(amt);
+        showToast('Unable to load Razorpay payment gateway. Please verify your internet connection.');
+        setRechargeLoading(false);
         return;
       }
 
@@ -1058,35 +1011,11 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
                 justifyContent: 'center',
                 alignItems: 'center',
                 gap: '8px',
-                marginBottom: '10px',
                 background: 'linear-gradient(135deg, #0284c7, #2563eb)'
               }}
             >
               <CreditCard size={18} />
               <span>{rechargeLoading ? 'Contacting Payment Gateway...' : `Proceed to Pay ₹${rechargeAmountInput} (Bank / UPI / Card)`}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleDirectSimulatedRecharge(rechargeAmountInput)}
-              disabled={rechargeLoading}
-              className="btn btn-outline"
-              style={{
-                width: '100%',
-                padding: '9px',
-                fontSize: '0.8rem',
-                fontWeight: 700,
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                gap: '6px',
-                borderColor: '#10b981',
-                color: '#059669'
-              }}
-              title="Instant sandbox recharge simulation without external bank gateway dependency"
-            >
-              <Zap size={14} />
-              <span>Instant Sandbox Demo Credit (+₹{rechargeAmountInput})</span>
             </button>
           </div>
         </div>
