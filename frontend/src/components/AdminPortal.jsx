@@ -139,6 +139,18 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
     }
   };
 
+  const triggerLocalEspSync = async (ip) => {
+    if (!ip) return;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1800);
+      await fetch(`http://${ip}/sync-now`, { signal: controller.signal, mode: 'no-cors' });
+      clearTimeout(timeoutId);
+    } catch (e) {
+      // Local network call error can be ignored if admin is remote
+    }
+  };
+
   const handleUpdateBilling = async (e) => {
     e.preventDefault();
     if (!inspectedMeterId) return;
@@ -160,6 +172,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       if (!res.ok) throw new Error(data.error || 'Failed to update billing');
 
       showToast('Billing and next-order tariff rates successfully updated!');
+      const mIp = meterDetails?.device?.local_ip || meterDetails?.device?.localIp;
+      if (mIp) triggerLocalEspSync(mIp);
       handleInspectMeter(inspectedMeterId);
       loadData();
     } catch (err) {
@@ -182,6 +196,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       if (!res.ok) throw new Error(data.error || 'Failed to reset meter data');
 
       showToast('All past meter telemetry & session records erased successfully!');
+      const mIp = meterDetails?.device?.local_ip || meterDetails?.device?.localIp;
+      if (mIp) triggerLocalEspSync(mIp);
       handleInspectMeter(inspectedMeterId);
       loadData();
       loadDatabaseStats();
@@ -951,6 +967,25 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                   {meterDetails?.device?.isOnline ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                   {meterDetails?.device?.isOnline ? 'ONLINE' : 'OFFLINE'}
                 </span>
+
+                {(meterDetails?.device?.local_ip || meterDetails?.device?.localIp) && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ip = meterDetails.device.local_ip || meterDetails.device.localIp;
+                      showToast(`Pinging meter at http://${ip}/sync-now...`);
+                      await triggerLocalEspSync(ip);
+                      setTimeout(() => handleInspectMeter(inspectedMeterId), 1000);
+                      showToast('Instant sync signal sent to ESP32!');
+                    }}
+                    className="btn btn-outline"
+                    style={{ fontSize: '0.74rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    title="Send immediate database sync signal to ESP32 over local network"
+                  >
+                    <RefreshCw size={12} />
+                    <span>Sync ESP32 ({meterDetails.device.local_ip || meterDetails.device.localIp})</span>
+                  </button>
+                )}
 
                 <button
                   onClick={() => setInspectedMeterId(null)}

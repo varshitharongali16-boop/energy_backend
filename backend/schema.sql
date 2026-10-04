@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS devices (
     overdue_amount NUMERIC(10,2) DEFAULT 0.00,
     paid_amount NUMERIC(10,2) DEFAULT 0.00,
     needs_reset BOOLEAN DEFAULT false, -- Set by Admin to wipe meter
+    local_ip VARCHAR(50), -- Local IP address reported by ESP32 (e.g. 192.168.1.105)
     is_active BOOLEAN DEFAULT true,
     last_seen TIMESTAMP WITH TIME ZONE,
     last_online_at TIMESTAMP WITH TIME ZONE,

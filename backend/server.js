@@ -82,7 +82,7 @@ app.get('/api/status', (req, res) => {
 // ESP32 INGESTION ENDPOINT (Called by ESP32 via HTTPS POST)
 // ============================================================
 app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
-  const { voltage, current, power, pf, energy, cost, isLoadOn, correctionNum, session } = req.body;
+  const { voltage, current, power, pf, energy, cost, isLoadOn, correctionNum, session, localIp } = req.body;
 
   try {
     const corr = parseFloat(correctionNum) || 1.0;
@@ -150,11 +150,18 @@ app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
       );
     }
 
-    // 3. Update device last_seen timestamp
-    await db.query(
-      'UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1',
-      [req.device.id]
-    );
+    // 3. Update device last_seen timestamp & local_ip
+    if (localIp) {
+      await db.query(
+        'UPDATE devices SET last_seen = CURRENT_TIMESTAMP, local_ip = $1 WHERE id = $2',
+        [localIp, req.device.id]
+      );
+    } else {
+      await db.query(
+        'UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+        [req.device.id]
+      );
+    }
 
     // 4. Return updated cloud settings & recharge balances to ESP32
     const recharge = parseFloat(req.device.recharge_amount !== null && req.device.recharge_amount !== undefined ? req.device.recharge_amount : (req.device.paid_amount || 1000.0));
@@ -328,6 +335,7 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
         paidAmount: parseFloat(device.paid_amount || 0),
         lockedBilledCost: parseFloat(device.locked_billed_cost || 0),
         lockedBilledEnergy: parseFloat(device.locked_billed_energy || 0),
+        localIp: device.local_ip || null,
         lastSeen: device.last_seen,
         lastOnlineAt: device.last_online_at,
         lastOfflineAt: device.last_offline_at,

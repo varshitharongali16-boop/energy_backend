@@ -95,6 +95,7 @@ async function initDatabase() {
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS locked_billed_cost NUMERIC(10,2) DEFAULT 0.00;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS locked_billed_energy NUMERIC(12,4) DEFAULT 0.00;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS needs_reset BOOLEAN DEFAULT false;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS local_ip VARCHAR(50);
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_online_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_offline_at TIMESTAMP WITH TIME ZONE;
 

@@ -15,15 +15,20 @@ TFT_eSPI tft = TFT_eSPI();
 #define SCREEN_H 240
 
 // ============================================================
-// WIFI CONFIGURATION
+// WIFI CONFIGURATION (Dual Network with Auto-Fallback)
 // ============================================================
-const char* WIFI_SSID = "Nothing Phone (3a)_2505";
-const char* WIFI_PASS = "praveen DSP";
+const char* WIFI_SSID1 = "Nothing Phone (3a)_2505";
+const char* WIFI_PASS1 = "praveen DSP";
+
+const char* WIFI_SSID2 = "Krishh_b3_f1";
+const char* WIFI_PASS2 = "krishh@123";
+
+String activeSSID = "";
 
 WebServer server(80);
 
-const unsigned long WIFI_RETRY_INTERVAL = 600000UL; // 10 minutes
-const unsigned long WIFI_TIMEOUT        = 15000UL;  // 15 seconds
+const unsigned long WIFI_RETRY_INTERVAL = 30000UL;  // 30 seconds retry if disconnected
+const unsigned long WIFI_TIMEOUT        = 8000UL;   // 8 seconds per network
 unsigned long lastWiFiAttempt = 0;
 
 // ============================================================
@@ -38,9 +43,8 @@ const char* DEVICE_API_KEY = "meter_secret_key_123";
 // CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
 float CORRECTION_NUM = 1.000;
 
-// Hourly Cloud Sync Mode (Sends 1 request every hour = 3600000ms)
-#define HOURLY_SYNC_MODE true
-const unsigned long CLOUD_SYNC_INTERVAL = HOURLY_SYNC_MODE ? 3600000UL : 15000UL;
+// Live Cloud Sync Interval (Syncs telemetry & pulls website updates every 5 seconds)
+const unsigned long CLOUD_SYNC_INTERVAL = 5000UL; // 5 seconds for rapid live sync with website
 unsigned long lastCloudSync = 0;
 
 // ============================================================
@@ -253,9 +257,8 @@ void readPZEM() {
 // ============================================================
 // CLOUD TELEMETRY INGESTION (SEND TO RENDER & SYNC TARIFF)
 // ============================================================
-void sendTelemetryToCloud() {
+void doCloudSync() {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (millis() - lastCloudSync < CLOUD_SYNC_INTERVAL) return;
   lastCloudSync = millis();
 
   WiFiClientSecure client;
@@ -267,7 +270,7 @@ void sendTelemetryToCloud() {
     http.addHeader("x-device-id", DEVICE_ID);
     http.addHeader("x-api-key", DEVICE_API_KEY);
 
-    // Build JSON payload
+    // Build JSON payload including localIp
     String payload = "{";
     payload += "\"deviceId\":\"" + String(DEVICE_ID) + "\",";
     payload += "\"apiKey\":\"" + String(DEVICE_API_KEY) + "\",";
@@ -278,7 +281,8 @@ void sendTelemetryToCloud() {
     payload += "\"energy\":" + String(usedEnergy, 4) + ",";
     payload += "\"cost\":" + String(totalCost, 2) + ",";
     payload += "\"isLoadOn\":" + String(loadON ? "true" : "false") + ",";
-    payload += "\"correctionNum\":" + String(CORRECTION_NUM, 4);
+    payload += "\"correctionNum\":" + String(CORRECTION_NUM, 4) + ",";
+    payload += "\"localIp\":\"" + WiFi.localIP().toString() + "\"";
 
     // If a session just ended, attach it
     if (sessionCount > 0 && !loadON) {
@@ -374,6 +378,12 @@ void sendTelemetryToCloud() {
     }
     http.end();
   }
+}
+
+void sendTelemetryToCloud() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (millis() - lastCloudSync < CLOUD_SYNC_INTERVAL) return;
+  doCloudSync();
 }
 
 // ============================================================
@@ -590,24 +600,19 @@ void updateTFTScreen() {
 // ============================================================
 // WIFI CONNECT & STATUS SCREENS
 // ============================================================
-bool connectWiFi() {
-  Serial.println("\nConnecting WiFi...");
-  tft.fillScreen(BLACK);
-  tft.setTextColor(YELLOW, BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(20, 30);
-  tft.println("WIFI CONNECTING");
-
+bool tryConnectSSID(const char* ssid, const char* pass, int timeoutSec) {
+  Serial.printf("\n[WiFi] Attempting connection to SSID: %s\n", ssid);
+  tft.fillRect(20, 65, 280, 80, BLACK);
   tft.setTextColor(WHITE, BLACK);
   tft.setTextSize(1);
   tft.setCursor(20, 75);
-  tft.println(WIFI_SSID);
+  tft.println(ssid);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(ssid, pass);
 
   unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < (unsigned long)(timeoutSec * 1000)) {
     delay(300);
     tft.fillRect(20, 110, 280, 30, BLACK);
     tft.setTextColor(CYAN, BLACK);
@@ -617,12 +622,34 @@ bool connectWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi connected. IP: " + WiFi.localIP().toString());
+    activeSSID = String(ssid);
+    Serial.printf("[WiFi] Connected to %s! IP: %s\n", ssid, WiFi.localIP().toString().c_str());
+    return true;
+  }
+  WiFi.disconnect(true);
+  delay(100);
+  return false;
+}
+
+bool connectWiFi() {
+  tft.fillScreen(BLACK);
+  tft.setTextColor(YELLOW, BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(20, 30);
+  tft.println("WIFI CONNECTING");
+
+  // 1. Try Primary WiFi
+  if (tryConnectSSID(WIFI_SSID1, WIFI_PASS1, 8)) {
     return true;
   }
 
-  Serial.println("WiFi connection failed");
-  WiFi.disconnect(true);
+  // 2. Try Secondary WiFi
+  Serial.println("[WiFi] Primary WiFi unavailable. Trying Secondary WiFi...");
+  if (tryConnectSSID(WIFI_SSID2, WIFI_PASS2, 10)) {
+    return true;
+  }
+
+  Serial.println("[WiFi] All configured WiFi networks failed to connect.");
   return false;
 }
 
@@ -657,8 +684,8 @@ void showIPScreen() {
 
   tft.setTextColor(CYAN, BLACK);
   tft.setTextSize(1);
-  tft.setCursor(85, 205);
-  tft.println("STARTING SCREEN ROTATION (8s)...");
+  tft.setCursor(65, 205);
+  tft.println("CONNECTING DATABASE...");
 }
 
 void showOfflineScreen() {
@@ -680,7 +707,7 @@ void showOfflineScreen() {
 
   tft.setTextColor(CYAN, BLACK);
   tft.setCursor(45, 175);
-  tft.println("WIFI RETRY: 10 MIN");
+  tft.println("WIFI RETRY: 30 SEC");
 }
 
 void checkWiFi() {
@@ -693,9 +720,12 @@ void checkWiFi() {
   if (connected) {
     configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
     showIPScreen();
-    delay(8000);
+    delay(3000);
     currentScreen = 0;
     drawCurrentScreen();
+    // Immediately sync with database upon finding WiFi!
+    readPZEM();
+    doCloudSync();
   } else {
     showOfflineScreen();
     delay(2000);
@@ -1218,9 +1248,21 @@ void handleResetForbidden() {
   server.send(403, "text/plain", "Forbidden: Energy and session resets are restricted exclusively to the central Cloud Admin Portal.");
 }
 
+void handleSyncNow() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+  server.send(200, "application/json", "{\"success\":true,\"message\":\"Cloud database sync triggered\"}");
+  Serial.println("[Web] Direct sync request from website received! Contacting cloud database...");
+  readPZEM();
+  doCloudSync();
+}
+
 void startWebServer() {
   server.on("/", HTTP_GET, handleHome);
   server.on("/api", HTTP_GET, handleAPI);
+  server.on("/sync-now", HTTP_GET, handleSyncNow);
+  server.on("/sync-now", HTTP_POST, handleSyncNow);
   server.on("/settings", HTTP_POST, handleSettingsForbidden);
   server.on("/reset", HTTP_POST, handleResetForbidden);
   server.begin();
@@ -1271,7 +1313,18 @@ void setup() {
   if (connected) {
     configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
     showIPScreen();
-    delay(8000);
+    delay(3000);
+
+    // Initial PZEM read & immediate cloud sync on boot
+    readPZEM();
+    Serial.println("[Boot] Connecting to cloud database immediately...");
+    tft.fillRect(20, 185, 280, 45, BLACK);
+    tft.setTextColor(YELLOW, BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(20, 195);
+    tft.println("SYNCING DATABASE...");
+
+    doCloudSync();
   } else {
     showOfflineScreen();
     delay(2000);
@@ -1287,6 +1340,7 @@ void setup() {
 
   lastScreenChange = millis();
   lastWiFiAttempt  = millis();
+  lastCloudSync    = millis();
 }
 
 // ============================================================
