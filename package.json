@@ -1,0 +1,23 @@
+{
+  "name": "esp32-power-meter-fullstack",
+  "version": "1.0.0",
+  "description": "Unified ESP32 Power Meter full-stack app (Node.js API + React frontend) for Render",
+  "main": "backend/server.js",
+  "scripts": {
+    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "start": "node backend/server.js",
+    "dev": "node backend/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "pg": "^8.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
