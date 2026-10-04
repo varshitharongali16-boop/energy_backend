@@ -91,7 +91,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
         <h1 className="hero-main-title">
           Next-Generation <br />
           <span className="gradient-text">Smart Energy Metering</span> <br />
-          & Tariff Automation
+          & AI-Driven Tariff Automation
         </h1>
 
         <p className="hero-desc">
@@ -122,6 +122,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
           <span>⚡ Voltage: <strong style={{ color: 'var(--text-primary)' }}>{liveVoltageTick} V</strong></span>
           <span>⚡ Active Draw: <strong style={{ color: 'var(--cyan)' }}>{livePowerTick} W</strong></span>
           <span>⚡ Grid Frequency: <strong style={{ color: 'var(--purple)' }}>50.02 Hz</strong></span>
+          <span style={{ color: 'var(--cyan)' }}>🤖 Google AI Smart Grid Engine</span>
         </div>
 
         <div className="hero-actions">
@@ -143,6 +144,24 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
             <Layers size={18} />
             <span>Explore System Stack</span>
           </button>
+        </div>
+
+        {/* AI-Generated Smart Grid Visual Showcase */}
+        <div className="ai-hero-showcase glass">
+          <div className="showcase-img-container">
+            <img
+              src="/images/smart_grid_hero.jpg"
+              alt="Google AI Smart Energy Grid Core"
+              className="showcase-img"
+            />
+            <div className="showcase-overlay-badge top-left">
+              <span className="badge-dot"></span>
+              <span>AI SMART GRID CORE: ONLINE</span>
+            </div>
+            <div className="showcase-overlay-badge bottom-right">
+              <span>⚡ 230V RMS • 100A DUAL-TIER MONITORING</span>
+            </div>
+          </div>
         </div>
 
         {/* Live Metrics Ribbon */}
@@ -308,6 +327,23 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
         <div className="section-header">
           <span className="section-pill">HARDWARE SPECIFICATIONS</span>
           <h2 className="section-title">ESP32 & PZEM-004T Power Subsystem</h2>
+          <p className="section-subtitle">
+            Engineered with high-voltage optocoupler isolation, non-invasive current transformer (CT), and dual-core edge telemetry.
+          </p>
+        </div>
+
+        {/* Hardware Photo Banner */}
+        <div className="hw-visual-showcase glass">
+          <div className="hw-img-wrap">
+            <img
+              src="/images/iot_hardware_pzem.jpg"
+              alt="ESP32 PZEM-004T Hardware Assembly"
+              className="hw-img"
+            />
+            <div className="hw-overlay-tag">
+              <span>🔬 Laboratory Verified • 230V True RMS Sampling</span>
+            </div>
+          </div>
         </div>
 
         <div className="hardware-grid">
@@ -319,9 +355,10 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
             <ul className="hw-specs-list">
               <li><strong>Core:</strong> Dual-Core Xtensa 32-bit LX6 up to 240 MHz</li>
               <li><strong>Connectivity:</strong> 802.11 b/g/n 2.4GHz Wi-Fi + BLE</li>
-              <li><strong>Interface:</strong> Hardware UART2 (GPIO 16 RX, GPIO 17 TX)</li>
-              <li><strong>Transmission Cycle:</strong> Hourly consolidated sync (or continuous polling)</li>
-              <li><strong>Relay Control:</strong> GPIO 26 digital driver for load switching</li>
+              <li><strong>Hardware Serial (UART2):</strong> GPIO 34 (RX), GPIO 21 (TX)</li>
+              <li><strong>Display:</strong> 2.8" SPI TFT ILI9341 (320x240 RGB)</li>
+              <li><strong>Transmission Cycle:</strong> Hourly consolidated sync (or live testing)</li>
+              <li><strong>Storage:</strong> Non-Volatile Flash Preferences for zero-data-loss</li>
             </ul>
           </div>
 
@@ -335,7 +372,8 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               <li><strong>Current Measurement:</strong> 0 ~ 100A with Current Transformer (CT)</li>
               <li><strong>Active Power:</strong> 0 ~ 23 kW (Resolution: 0.1W)</li>
               <li><strong>Energy Accumulation:</strong> 0 ~ 9999 kWh non-volatile counter</li>
-              <li><strong>Isolation:</strong> Optocoupler barrier rated for 2kV isolation</li>
+              <li><strong>Isolation:</strong> Dual Optocoupler barrier rated for 2kV isolation</li>
+              <li><strong>Safety:</strong> Galvanically separated from low-voltage ESP32 logic</li>
             </ul>
           </div>
         </div>

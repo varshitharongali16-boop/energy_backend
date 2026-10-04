@@ -15,66 +15,69 @@ TFT_eSPI tft = TFT_eSPI();
 #define SCREEN_H 240
 
 // ============================================================
-// CLOUD BACKEND (RENDER) CONFIGURATION
-// ============================================================
-// Replace with your deployed Render URL: e.g. "https://your-service.onrender.com/api/device/telemetry"
-const char* CLOUD_API_URL = "https://energy-backend-gwex.onrender.com/api/device/telemetry";
-const char* DEVICE_ID     = "ESP32_METER_01";
-const char* DEVICE_API_KEY = "meter_secret_key_123";
-
-// CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
-// Default is 1.000. If your external multimeter reads 230V and PZEM reads 225V,
-// set CORRECTION_NUM = 230.0 / 225.0 = 1.022
-float CORRECTION_NUM = 1.000;
-
-// CLOUD TRANSMISSION INTERVAL (Hourly Sync: 1 request every 60 minutes)
-// 3600000UL = 1 hour (3600 seconds * 1000ms). For testing, you can use 30000UL (30s)
-#define HOURLY_SYNC_MODE true
-const unsigned long CLOUD_SYNC_INTERVAL = HOURLY_SYNC_MODE ? 3600000UL : 15000UL;
-unsigned long lastCloudSync = 0;
-
-// ============================================================
 // WIFI CONFIGURATION
 // ============================================================
-// Enter your local Wi-Fi SSID and Password here
+// Enter your local Wi-Fi network SSID and Password
 const char* WIFI_SSID = "Nothing Phone (3a)_2505";
 const char* WIFI_PASS = "praveen DSP";
 
 WebServer server(80);
 
 const unsigned long WIFI_RETRY_INTERVAL = 600000UL; // 10 minutes
-const unsigned long WIFI_TIMEOUT = 15000UL;
+const unsigned long WIFI_TIMEOUT        = 15000UL;  // 15 seconds
 unsigned long lastWiFiAttempt = 0;
 
 // ============================================================
-// PZEM-004T v3.0 PINS (Serial2)
+// CLOUD BACKEND (RENDER) CONFIGURATION
+// ============================================================
+// Telemetry is synchronized to your Render cloud service.
+// Tariff unit price, quota, and reset commands are managed centrally by the Admin on the website.
+const char* CLOUD_API_URL  = "https://energy-backend-gwex.onrender.com/api/device/telemetry";
+const char* DEVICE_ID      = "ESP32_METER_01";
+const char* DEVICE_API_KEY = "meter_secret_key_123";
+
+// CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
+// If external digital multimeter reads 230.0V and raw PZEM reads 225.0V:
+// CORRECTION_NUM = 230.0 / 225.0 = 1.0222
+float CORRECTION_NUM = 1.000;
+
+// Transmission Interval to Render Cloud
+// Set to true for HOURLY sync (1 request every 60 mins = 3600000ms) to save data & bandwidth
+// Set to false for FAST sync (every 15 seconds) for live demo/testing
+#define HOURLY_SYNC_MODE true
+const unsigned long CLOUD_SYNC_INTERVAL = HOURLY_SYNC_MODE ? 3600000UL : 15000UL;
+unsigned long lastCloudSync = 0;
+
+// ============================================================
+// PZEM-004T v3.0 HARDWARE SERIAL (Serial2)
 // ============================================================
 #define PZEM_RX 34
 #define PZEM_TX 21
 PZEM004Tv30 pzem(Serial2, PZEM_RX, PZEM_TX);
 
 // ============================================================
-// PERSISTENT STORAGE
+// PERSISTENT STORAGE (NVS Preferences)
 // ============================================================
 Preferences prefs;
 
 // ============================================================
-// ENERGY VARIABLES & BILLING
+// ENERGY VARIABLES & SETTINGS
+// Controlled centrally by Cloud Admin
 // ============================================================
-float unitPrice = 8.50;
-float allowedUnits = 100.0;
+float unitPrice     = 8.50;   // In ₹ / kWh
+float allowedUnits  = 100.0;  // Allowed quota in kWh
 float initialEnergy = 0.0;
 
-float energy = 0.0;
-float usedEnergy = 0.0;
-float totalCost = 0.0;
+float energy        = 0.0;
+float usedEnergy    = 0.0;
+float totalCost     = 0.0;
 float totalAllowedAmount = 0.0;
-float amountRemaining = 0.0;
+float amountRemaining    = 0.0;
 
-// PZEM Live Telemetry
-float voltage = 0.0;
-float current = 0.0;
-float power = 0.0;
+// Live Readings from PZEM
+float voltage     = 0.0;
+float current     = 0.0;
+float power       = 0.0;
 float powerFactor = 0.0;
 
 // ============================================================
@@ -97,12 +100,12 @@ int currentScreen = 0;
 unsigned long lastScreenChange = 0;
 
 unsigned long lastPzemUpdate = 0;
-unsigned long lastTFTUpdate = 0;
+unsigned long lastTFTUpdate  = 0;
 unsigned long lastSettingsSave = 0;
 
-const unsigned long PZEM_INTERVAL = 1000;
-const unsigned long TFT_UPDATE_INTERVAL = 1000;
-const unsigned long SETTINGS_SAVE_INTERVAL = 30000;
+const unsigned long PZEM_INTERVAL       = 1000;  // Read PZEM every 1s
+const unsigned long TFT_UPDATE_INTERVAL = 1000;  // Update TFT every 1s
+const unsigned long SETTINGS_SAVE_INTERVAL = 30000; // Auto-save every 30s
 
 // TFT Color Palette
 #define BLACK       0x0000
@@ -121,7 +124,7 @@ const unsigned long SETTINGS_SAVE_INTERVAL = 30000;
 #define PURPLE      0x780F
 
 // ============================================================
-// TIME FUNCTIONS
+// TIME HELPERS
 // ============================================================
 String getCurrentTime() {
   struct tm timeinfo;
@@ -151,7 +154,7 @@ String getRunningTime() {
 }
 
 // ============================================================
-// ENERGY MATH
+// VALUE CALCULATIONS
 // ============================================================
 void calculateValues() {
   usedEnergy = energy - initialEnergy;
@@ -164,7 +167,7 @@ void calculateValues() {
 }
 
 // ============================================================
-// PZEM SENSOR READING
+// PZEM READING & LOAD SENSING
 // ============================================================
 void readPZEM() {
   float newVoltage = pzem.voltage();
@@ -173,10 +176,11 @@ void readPZEM() {
   float newEnergy  = pzem.energy();
   float newPF      = pzem.pf();
 
-  if (!isnan(newVoltage)) voltage = newVoltage;
-  if (!isnan(newCurrent)) current = newCurrent;
-  if (!isnan(newPower))   power = newPower;
-  if (!isnan(newEnergy))  energy = newEnergy;
+  // Apply calibration correction factor if valid
+  if (!isnan(newVoltage)) voltage = newVoltage * CORRECTION_NUM;
+  if (!isnan(newCurrent)) current = newCurrent * CORRECTION_NUM;
+  if (!isnan(newPower))   power   = newPower   * CORRECTION_NUM;
+  if (!isnan(newEnergy))  energy  = newEnergy;
   if (!isnan(newPF))      powerFactor = newPF;
 
   calculateValues();
@@ -191,15 +195,17 @@ void readPZEM() {
   if (loadON && !previousLoadON) {
     loadStartMillis = millis();
     loadStartTime = getCurrentTime();
+    Serial.println("[PZEM] Load Started at: " + loadStartTime);
   }
 
   if (!loadON && previousLoadON) {
     loadStopTime = getCurrentTime();
+    Serial.println("[PZEM] Load Stopped at: " + loadStopTime);
   }
 }
 
 // ============================================================
-// CLOUD INGESTION: SEND TELEMETRY TO RENDER & SYNC SETTINGS
+// CLOUD TELEMETRY INGESTION (SEND TO RENDER & SYNC TARIFF)
 // ============================================================
 void sendTelemetryToCloud() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -207,7 +213,7 @@ void sendTelemetryToCloud() {
   lastCloudSync = millis();
 
   WiFiClientSecure client;
-  client.setInsecure(); // Skip certificate validation for simplified IoT connection
+  client.setInsecure(); // Skip SSL cert validation for embedded ESP32
 
   HTTPClient http;
   if (http.begin(client, CLOUD_API_URL)) {
@@ -232,7 +238,9 @@ void sendTelemetryToCloud() {
     int httpCode = http.POST(payload);
     if (httpCode == HTTP_CODE_OK) {
       String response = http.getString();
-      // Optional check: sync unitPrice & allowedUnits if provided by cloud
+      Serial.println("[Cloud] Synchronized successfully with Render backend.");
+
+      // Sync official tariff price set by Admin on website
       int priceIdx = response.indexOf("\"unitPrice\":");
       if (priceIdx != -1) {
         float cloudPrice = response.substring(priceIdx + 12).toFloat();
@@ -240,9 +248,11 @@ void sendTelemetryToCloud() {
           unitPrice = cloudPrice;
           prefs.putFloat("price", unitPrice);
           calculateValues();
+          Serial.printf("[Cloud] Admin updated Tariff Unit Price: ₹%.2f/kWh\n", unitPrice);
         }
       }
 
+      // Sync allowed quota units set by Admin on website
       int unitsIdx = response.indexOf("\"allowedUnits\":");
       if (unitsIdx != -1) {
         float cloudUnits = response.substring(unitsIdx + 15).toFloat();
@@ -250,24 +260,38 @@ void sendTelemetryToCloud() {
           allowedUnits = cloudUnits;
           prefs.putFloat("allowed", allowedUnits);
           calculateValues();
+          Serial.printf("[Cloud] Admin updated Allowed Quota: %.1f kWh\n", allowedUnits);
         }
       }
     } else {
-      Serial.printf("[Cloud] POST failed, HTTP Code: %d\n", httpCode);
+      Serial.printf("[Cloud] POST failed, HTTP status: %d\n", httpCode);
     }
     http.end();
   }
 }
 
 // ============================================================
-// TFT HARDWARE DRAW ROUTINES
+// TFT DISPLAY DRAW ROUTINES
 // ============================================================
 void drawHeader(const char* title, uint16_t color) {
   tft.fillRect(0, 0, SCREEN_W, 38, NAVY);
   tft.setTextColor(color, NAVY);
   tft.setTextSize(2);
-  tft.setCursor(12, 10);
+  tft.setCursor(10, 10);
   tft.print(title);
+
+  // Display Local IP on Header so user can always see it
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.setTextColor(CYAN, NAVY);
+    tft.setTextSize(1);
+    tft.setCursor(160, 14);
+    tft.print(WiFi.localIP().toString());
+  } else {
+    tft.setTextColor(ORANGE, NAVY);
+    tft.setTextSize(1);
+    tft.setCursor(185, 14);
+    tft.print("OFFLINE");
+  }
 
   tft.setTextColor(LIGHTGRAY, NAVY);
   tft.setTextSize(1);
@@ -453,7 +477,7 @@ void updateTFTScreen() {
 }
 
 // ============================================================
-// WIFI SETUP & CONNECT ROUTINES
+// WIFI CONNECT & STATUS SCREENS
 // ============================================================
 bool connectWiFi() {
   Serial.println("\nConnecting WiFi...");
@@ -495,24 +519,35 @@ void showIPScreen() {
   tft.fillScreen(BLACK);
   tft.setTextColor(GREEN, BLACK);
   tft.setTextSize(2);
-  tft.setCursor(65, 25);
+  tft.setCursor(65, 20);
   tft.println("WIFI CONNECTED");
 
   String ip = WiFi.localIP().toString();
   tft.setTextColor(CYAN, BLACK);
   tft.setTextSize(3);
   int width = ip.length() * 18;
-  tft.setCursor(max(0, (320 - width) / 2), 75);
+  tft.setCursor(max(0, (320 - width) / 2), 65);
   tft.println(ip);
 
   tft.setTextColor(WHITE, BLACK);
   tft.setTextSize(2);
-  tft.setCursor(55, 125);
-  tft.println("LOCAL & CLOUD ON");
+  tft.setCursor(35, 115);
+  tft.println("OPEN LOCAL IP IN BROWSER");
+
+  tft.setTextColor(LIGHTGRAY, BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(38, 155);
+  tft.println("LOCAL: READ-ONLY LIVE TELEMETRY");
 
   tft.setTextColor(YELLOW, BLACK);
-  tft.setCursor(75, 170);
-  tft.println("SYNCING TO RENDER");
+  tft.setTextSize(1);
+  tft.setCursor(38, 175);
+  tft.println("ADMIN: SETTINGS & RESETS ON CLOUD WEB");
+
+  tft.setTextColor(CYAN, BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(85, 205);
+  tft.println("STARTING SCREEN ROTATION (8s)...");
 }
 
 void showOfflineScreen() {
@@ -547,7 +582,7 @@ void checkWiFi() {
   if (connected) {
     configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
     showIPScreen();
-    delay(4000);
+    delay(8000);
     currentScreen = 0;
     drawCurrentScreen();
   } else {
@@ -558,7 +593,7 @@ void checkWiFi() {
 }
 
 // ============================================================
-// LOCAL BACKUP WEB SERVER ENDPOINTS (FOR OFFLINE / LOCAL VIEW)
+// REST API (FOR LOCAL LIVE READINGS)
 // ============================================================
 void handleAPI() {
   float unitsLeft = allowedUnits - usedEnergy;
@@ -568,7 +603,7 @@ void handleAPI() {
   json += "\"voltage\":" + String(loadON ? voltage : 0, 2);
   json += ",\"current\":" + String(loadON ? current : 0, 3);
   json += ",\"power\":" + String(loadON ? power : 0, 2);
-  json += ",\"pf\":" + String(loadON ? powerFactor : 0, 2);
+  json += ",\"pf\":" + String(loadON ? powerFactor : 2);
   json += ",\"energy\":" + String(usedEnergy, 3);
   json += ",\"unitsLeft\":" + String(unitsLeft, 3);
   json += ",\"cost\":" + String(totalCost, 2);
@@ -582,19 +617,435 @@ void handleAPI() {
   json += ",\"stopTime\":\"" + loadStopTime + "\"";
   json += ",\"currentTime\":\"" + getCurrentTime() + "\"";
   json += ",\"runningTime\":\"" + getRunningTime() + "\"";
+  json += ",\"correctionNum\":" + String(CORRECTION_NUM, 4);
   json += "}";
 
   server.send(200, "application/json", json);
 }
 
+// ============================================================
+// LOCAL WEB PAGE (READ-ONLY CONSUMER LIVE VIEW)
+// NO RESET / NO SETTINGS EDIT BUTTONS (ADMIN-ONLY ON WEB PORTAL)
+// ============================================================
+String htmlPage() {
+  return R"rawliteral(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ESP32 Smart Energy Meter — Local Live Monitor</title>
+<style>
+:root {
+  --bg-deep: #f8fafc;
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --border: #e2e8f0;
+  --text-main: #0f172a;
+  --text-dim: #475569;
+  --cyan: #0284c7;
+  --blue: #2563eb;
+  --emerald: #059669;
+  --amber: #d97706;
+  --red: #dc2626;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+body {
+  background: var(--bg-deep);
+  background-image:
+    radial-gradient(circle at 10% 15%, rgba(2, 132, 199, 0.08), transparent 45%),
+    radial-gradient(circle at 90% 85%, rgba(5, 150, 105, 0.07), transparent 48%);
+  background-attachment: fixed;
+  color: var(--text-main);
+  min-height: 100vh;
+  padding: 16px 12px 30px;
+}
+.container { max-width: 1050px; margin: 0 auto; }
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.06);
+  transition: all 0.3s ease;
+}
+.card:hover { border-color: rgba(2, 132, 199, 0.35); box-shadow: 0 10px 25px -4px rgba(2, 132, 199, 0.12); }
+
+/* Header */
+.header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 24px; margin-bottom: 20px;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 900; font-size: 20px;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
+}
+.brand-title { font-size: 1.2rem; font-weight: 800; color: var(--text-main); }
+.brand-sub { font-size: 0.75rem; color: var(--text-dim); }
+.status-pill {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 30px; font-size: 0.78rem; font-weight: 700;
+  background: #ffffff; border: 1px solid var(--border);
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--emerald); box-shadow: 0 0 10px var(--emerald);
+  animation: pulse 1.8s infinite;
+}
+
+/* Read-Only Notice */
+.readonly-notice {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px; border-radius: 14px;
+  background: #e0f2fe; border: 1px solid #bae6fd;
+  color: #0369a1; font-size: 0.82rem; font-weight: 600;
+  margin-bottom: 20px;
+}
+
+/* Hero Section */
+.hero { display: grid; grid-template-columns: 1.35fr 1fr; gap: 20px; margin-bottom: 20px; }
+.power-card { padding: 24px; display: flex; flex-direction: column; justify-content: space-between; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.card-lbl { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.8px; color: var(--text-dim); text-transform: uppercase; }
+.load-badge {
+  padding: 5px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 800;
+  display: flex; align-items: center; gap: 6px;
+}
+.load-on { background: #ecfdf5; color: var(--emerald); border: 1px solid #a7f3d0; }
+.load-off { background: #f1f5f9; color: var(--text-dim); border: 1px solid #e2e8f0; }
+
+.gauge-box { text-align: center; margin: 18px 0 10px; position: relative; }
+.gauge-svg { width: 100%; max-width: 260px; height: auto; }
+.gauge-track { fill: none; stroke: #e2e8f0; stroke-width: 14; stroke-linecap: round; }
+.gauge-bar {
+  fill: none; stroke: url(#pGrad); stroke-width: 14; stroke-linecap: round;
+  stroke-dasharray: 251.3; stroke-dashoffset: 251.3;
+  transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.power-center { position: absolute; bottom: 8px; width: 100%; left: 0; text-align: center; }
+.power-val {
+  font-size: 3.2rem; font-weight: 900; line-height: 1;
+  color: var(--text-main); font-variant-numeric: tabular-nums;
+}
+.power-unit { font-size: 1.15rem; color: var(--cyan); font-weight: 800; margin-left: 4px; }
+.card-foot {
+  display: flex; justify-content: space-between; padding-top: 14px;
+  border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-dim);
+}
+
+/* Quota Card */
+.budget-card { padding: 24px; display: flex; flex-direction: column; justify-content: space-between; }
+.metric-row { margin-bottom: 20px; }
+.metric-row:last-child { margin-bottom: 0; }
+.row-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.row-val { font-size: 1.6rem; font-weight: 900; font-variant-numeric: tabular-nums; }
+.track { height: 12px; background: #e2e8f0; border-radius: 20px; overflow: hidden; position: relative; }
+.fill { height: 100%; width: 0%; border-radius: 20px; transition: width 0.8s ease; }
+.sub-meta { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; font-weight: 500; }
+
+/* Grid Tiles */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.tile { padding: 18px 20px; display: flex; align-items: center; gap: 14px; }
+.tile-icon {
+  width: 44px; height: 44px; border-radius: 12px; background: #f1f5f9;
+  display: flex; align-items: center; justify-content: center; font-size: 1.3rem; flex-shrink: 0;
+}
+.tile-body { flex-grow: 1; }
+.tile-lbl { font-size: 0.72rem; font-weight: 800; color: var(--text-dim); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 3px; }
+.tile-val { font-size: 1.35rem; font-weight: 900; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.tile-unit { font-size: 0.82rem; font-weight: 600; color: var(--text-dim); margin-left: 2px; }
+
+/* Institutional Admin Footer Notice */
+.admin-lock-card {
+  padding: 22px 24px; border-radius: 18px;
+  background: #ffffff; border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 18px;
+  font-size: 0.82rem; color: var(--text-dim); line-height: 1.5;
+}
+.lock-icon {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: #f1f5f9; color: var(--cyan);
+  display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0;
+}
+
+@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(0.9); } }
+
+@media (max-width: 800px) { .hero { grid-template-columns: 1fr; } }
+@media (max-width: 520px) {
+  .header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .grid { grid-template-columns: 1fr 1fr; }
+  .power-val { font-size: 2.7rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <header class="header card">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">ESP32 POWER METER</div>
+        <div class="brand-sub">Local Wi-Fi Consumer Portal (Read-Only)</div>
+      </div>
+    </div>
+    <div class="status-pill">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText">LIVE LOCAL</span>
+    </div>
+  </header>
+
+  <!-- Read-Only Notice -->
+  <div class="readonly-notice">
+    <span>🔒</span>
+    <span>
+      <strong>Read-Only Consumer View:</strong> Live telemetry is streamed directly from the PZEM-004T.
+      Tariff rates, quota limits, and resets are securely administered via the central cloud website.
+    </span>
+  </div>
+
+  <!-- Hero Power & Quota Row -->
+  <section class="hero">
+    <!-- Active Power Speedometer -->
+    <div class="power-card card">
+      <div class="card-head">
+        <span class="card-lbl">Active Power Load</span>
+        <div class="load-badge load-off" id="loadBadge">
+          <span>●</span> <span id="loadText">STANDBY</span>
+        </div>
+      </div>
+
+      <div class="gauge-box">
+        <svg class="gauge-svg" viewBox="0 0 200 125">
+          <defs>
+            <linearGradient id="pGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#0284c7" />
+              <stop offset="45%" stop-color="#2563eb" />
+              <stop offset="80%" stop-color="#d97706" />
+              <stop offset="100%" stop-color="#dc2626" />
+            </linearGradient>
+          </defs>
+          <path class="gauge-track" d="M 25 105 A 75 75 0 0 1 175 105" />
+          <path class="gauge-bar" id="gaugePath" d="M 25 105 A 75 75 0 0 1 175 105" />
+        </svg>
+        <div class="power-center">
+          <div class="power-val" id="powerVal">0.0</div>
+          <span class="power-unit">W</span>
+        </div>
+      </div>
+
+      <div class="card-foot">
+        <span>Load Start: <strong id="startTime" style="color:var(--text-main)">--:--:--</strong></span>
+        <span>Active Runtime: <strong id="runningTime" style="color:var(--cyan)">00:00:00</strong></span>
+      </div>
+    </div>
+
+    <!-- Quota & Balance Card -->
+    <div class="budget-card card">
+      <div class="card-head" style="margin-bottom:14px;">
+        <span class="card-lbl">Quota & Budget Status</span>
+        <span id="percentLeftBadge" style="font-size:0.8rem;font-weight:800;color:var(--emerald)">100% REMAINING</span>
+      </div>
+
+      <div class="metric-row">
+        <div class="row-head">
+          <span style="font-size:0.8rem;color:var(--text-dim)">Units Remaining</span>
+          <div class="row-val" style="color:var(--cyan)">
+            <span id="unitsLeft">0.000</span> <span style="font-size:0.9rem;color:var(--text-dim)">kWh</span>
+          </div>
+        </div>
+        <div class="track">
+          <div class="fill" id="unitsBar" style="background:linear-gradient(90deg, #0284c7, #2563eb)"></div>
+        </div>
+        <div class="sub-meta">
+          <span>Used: <strong id="usedEnergyVal">0.000</strong> kWh</span>
+          <span>Allocated: <strong id="allowedUnitsVal">0</strong> kWh</span>
+        </div>
+      </div>
+
+      <div class="metric-row">
+        <div class="row-head">
+          <span style="font-size:0.8rem;color:var(--text-dim)">Remaining Balance</span>
+          <div class="row-val" style="color:var(--emerald)">
+            ₹<span id="amountRemaining">0.00</span>
+          </div>
+        </div>
+        <div class="track">
+          <div class="fill" id="moneyBar" style="background:linear-gradient(90deg, #059669, #0284c7)"></div>
+        </div>
+        <div class="sub-meta">
+          <span>Current Bill: ₹<span id="totalCost">0.00</span></span>
+          <span>Total Cap: ₹<span id="allowedAmount">0.00</span></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Metric Tiles Grid -->
+  <section class="grid">
+    <div class="tile card">
+      <div class="tile-icon" style="color:#0284c7;">⚡</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Line Voltage</div>
+        <div class="tile-val"><span id="voltageVal">0.0</span><span class="tile-unit">V</span></div>
+      </div>
+    </div>
+
+    <div class="tile card">
+      <div class="tile-icon" style="color:#7c3aed;">〰</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Current Draw</div>
+        <div class="tile-val"><span id="currentVal">0.000</span><span class="tile-unit">A</span></div>
+      </div>
+    </div>
+
+    <div class="tile card">
+      <div class="tile-icon" style="color:#d97706;">📊</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Power Factor</div>
+        <div class="tile-val"><span id="pfVal">0.00</span><span class="tile-unit">PF</span></div>
+      </div>
+    </div>
+
+    <div class="tile card">
+      <div class="tile-icon" style="color:#059669;">₹</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Tariff Unit Price</div>
+        <div class="tile-val">₹<span id="priceVal">0.00</span><span class="tile-unit">/kWh</span></div>
+      </div>
+    </div>
+
+    <div class="tile card">
+      <div class="tile-icon" style="color:#2563eb;">🕒</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Clock (NTP Time)</div>
+        <div class="tile-val" id="timeVal" style="font-size:1.15rem">--:--:--</div>
+      </div>
+    </div>
+
+    <div class="tile card">
+      <div class="tile-icon" style="color:#dc2626;">⏹</div>
+      <div class="tile-body">
+        <div class="tile-lbl">Last Stop Time</div>
+        <div class="tile-val" id="stopVal" style="font-size:1.15rem">--:--:--</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Administrative Security Footer -->
+  <div class="admin-lock-card">
+    <div class="lock-icon">🛡️</div>
+    <div>
+      <strong style="color:var(--text-main);display:block;margin-bottom:2px;">Centralized Cloud Administration Enabled</strong>
+      Tariff reconfigurations, energy quota increases, and historical audit resets are restricted to the authorized System Administrator via the Cloud Portal. Local Wi-Fi consumers are granted live, tamper-proof monitoring.
+    </div>
+  </div>
+
+</div>
+
+<script>
+let lastMaxPower = 3000.0;
+
+async function update() {
+  try {
+    const res = await fetch('/api', { cache: 'no-store' });
+    const d = await res.json();
+
+    document.getElementById('voltageVal').innerText = d.voltage.toFixed(1);
+    document.getElementById('currentVal').innerText = d.current.toFixed(3);
+    document.getElementById('powerVal').innerText = d.power.toFixed(1);
+    document.getElementById('pfVal').innerText = d.pf.toFixed(2);
+    document.getElementById('unitsLeft').innerText = d.unitsLeft.toFixed(3);
+    document.getElementById('usedEnergyVal').innerText = d.energy.toFixed(3);
+    document.getElementById('allowedUnitsVal').innerText = d.allowedUnits.toFixed(1);
+    document.getElementById('totalCost').innerText = d.cost.toFixed(2);
+    document.getElementById('priceVal').innerText = d.price.toFixed(2);
+    document.getElementById('amountRemaining').innerText = d.amountRemaining.toFixed(2);
+    document.getElementById('allowedAmount').innerText = d.allowedAmount.toFixed(2);
+    document.getElementById('timeVal').innerText = d.currentTime;
+    document.getElementById('runningTime').innerText = d.runningTime;
+    document.getElementById('stopVal').innerText = d.stopTime;
+    document.getElementById('startTime').innerText = d.startTime;
+
+    // Load status badge
+    const loadBadge = document.getElementById('loadBadge');
+    const loadText = document.getElementById('loadText');
+    if (d.load) {
+      loadBadge.className = 'load-badge load-on';
+      loadText.innerText = 'LOAD ACTIVE';
+    } else {
+      loadBadge.className = 'load-badge load-off';
+      loadText.innerText = 'STANDBY';
+    }
+
+    // Gauge ratio
+    if (d.power > lastMaxPower) lastMaxPower = d.power * 1.25;
+    let powerRatio = Math.min(Math.max(d.power / lastMaxPower, 0), 1);
+    let offset = 251.3 - (powerRatio * 251.3);
+    document.getElementById('gaugePath').style.strokeDashoffset = offset;
+
+    // Quota Percentage & Bars
+    let unitPct = d.allowedUnits > 0 ? (d.unitsLeft / d.allowedUnits) * 100 : 0;
+    unitPct = Math.min(Math.max(unitPct, 0), 100);
+    document.getElementById('unitsBar').style.width = unitPct + '%';
+
+    let moneyPct = d.allowedAmount > 0 ? (d.amountRemaining / d.allowedAmount) * 100 : 0;
+    moneyPct = Math.min(Math.max(moneyPct, 0), 100);
+    document.getElementById('moneyBar').style.width = moneyPct + '%';
+
+    const pBadge = document.getElementById('percentLeftBadge');
+    pBadge.innerText = Math.round(unitPct) + '% REMAINING';
+    pBadge.style.color = unitPct < 20 ? 'var(--red)' : (unitPct < 50 ? 'var(--amber)' : 'var(--emerald)');
+
+    // WiFi status badge
+    const statusText = document.getElementById('statusText');
+    const dot = document.getElementById('statusDot');
+    if (d.wifi) {
+      statusText.innerText = 'LIVE • CONNECTED';
+      dot.style.background = 'var(--emerald)';
+    } else {
+      statusText.innerText = 'LOCAL OFFLINE';
+      dot.style.background = 'var(--amber)';
+    }
+  } catch (err) {
+    document.getElementById('statusText').innerText = 'OFFLINE';
+    document.getElementById('statusDot').style.background = 'var(--red)';
+  }
+}
+
+setInterval(update, 1000);
+update();
+</script>
+</body>
+</html>)rawliteral";
+}
+
+// ============================================================
+// WEB SERVER ENDPOINTS
+// ============================================================
 void handleHome() {
-  server.send(200, "text/plain", "ESP32 PZEM Energy Meter is Online and reporting to Render Cloud.");
+  server.send(200, "text/html", htmlPage());
+}
+
+// Local settings update attempt is blocked with 403 Forbidden
+void handleSettingsForbidden() {
+  server.send(403, "text/plain", "Forbidden: Tariff unit price and quota limits can only be configured by the Administrator on the Cloud Website.");
+}
+
+void handleResetForbidden() {
+  server.send(403, "text/plain", "Forbidden: Energy and session resets are restricted exclusively to the central Cloud Admin Portal.");
 }
 
 void startWebServer() {
   server.on("/", HTTP_GET, handleHome);
   server.on("/api", HTTP_GET, handleAPI);
+  server.on("/settings", HTTP_POST, handleSettingsForbidden);
+  server.on("/reset", HTTP_POST, handleResetForbidden);
   server.begin();
+  Serial.println("[Web] Local Read-Only Web Server started on port 80");
 }
 
 // ============================================================
@@ -619,7 +1070,7 @@ void setup() {
   tft.setTextColor(WHITE, BLACK);
   tft.setTextSize(2);
   tft.setCursor(35, 125);
-  tft.println("ESP32 + CLOUD");
+  tft.println("ESP32 + PZEM");
   tft.setCursor(35, 160);
   tft.println("STARTING...");
 
@@ -630,7 +1081,7 @@ void setup() {
 
   // Load Saved Preferences
   prefs.begin("powermeter", false);
-  unitPrice = prefs.getFloat("price", 8.50);
+  unitPrice    = prefs.getFloat("price", 8.50);
   allowedUnits = prefs.getFloat("allowed", 100.0);
   initialEnergy = prefs.getFloat("initial", 0.0);
 
@@ -639,13 +1090,13 @@ void setup() {
   if (connected) {
     configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
     showIPScreen();
-    delay(4000);
+    delay(8000);
   } else {
     showOfflineScreen();
     delay(2000);
   }
 
-  // Launch Local Server
+  // Launch Local Read-Only Web Server
   startWebServer();
 
   // Initial PZEM read & first display render
@@ -654,29 +1105,32 @@ void setup() {
   drawCurrentScreen();
 
   lastScreenChange = millis();
-  lastWiFiAttempt = millis();
+  lastWiFiAttempt  = millis();
 }
 
 // ============================================================
 // MAIN LOOP
 // ============================================================
 void loop() {
+  // 1. Handle local browser client requests
   server.handleClient();
+
+  // 2. Maintain Wi-Fi connectivity
   checkWiFi();
 
-  // Periodic PZEM Sensor Read (Every 1s)
+  // 3. Periodic PZEM Sensor Read (Every 1s)
   if (millis() - lastPzemUpdate >= PZEM_INTERVAL) {
     lastPzemUpdate = millis();
     readPZEM();
   }
 
-  // Periodic Cloud Telemetry Sync to Render (Every 5s)
+  // 4. Periodic Cloud Telemetry Sync to Render (Hourly or Configured Interval)
   sendTelemetryToCloud();
 
-  // Periodic TFT Screen Updates & Transitions
+  // 5. Periodic TFT Screen Updates & Transitions
   updateTFTScreen();
 
-  // Periodically Persist Settings (Every 30s)
+  // 6. Periodically Persist Settings (Every 30s)
   if (millis() - lastSettingsSave >= SETTINGS_SAVE_INTERVAL) {
     lastSettingsSave = millis();
     prefs.putFloat("price", unitPrice);
