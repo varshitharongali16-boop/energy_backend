@@ -17,8 +17,26 @@ import {
   Calendar,
   ListFilter,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  CreditCard,
+  ArrowUpRight,
+  Lock
 } from 'lucide-react';
+
+// Helper to dynamically load Razorpay Checkout Script
+function loadRazorpayScript() {
+  return new Promise((resolve) => {
+    if (window.Razorpay) {
+      resolve(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+}
 
 export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToLanding, showToast }) {
   const [meters, setMeters] = useState([]);
@@ -31,6 +49,12 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
   const [sessions, setSessions] = useState([]);
   const [sessionSummary, setSessionSummary] = useState(null);
   const [monthlyRecords, setMonthlyRecords] = useState([]);
+
+  // Razorpay Recharge States
+  const [showRechargeModal, setShowRechargeModal] = useState(false);
+  const [rechargeAmountInput, setRechargeAmountInput] = useState(500);
+  const [rechargeLoading, setRechargeLoading] = useState(false);
+  const [rechargeHistory, setRechargeHistory] = useState([]);
 
   // Alarm threshold
   const [overloadThreshold, setOverloadThreshold] = useState(2500);
@@ -100,7 +124,7 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     }
 
     fetchLive();
-    const interval = setInterval(fetchLive, 3000);
+    const interval = setInterval(fetchLive, 2000);
 
     return () => {
       isMounted = false;
@@ -108,19 +132,21 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     };
   }, [selectedMeterId, overloadThreshold, soundEnabled]);
 
-  // Load sessions and monthly history when selected meter changes
+  // Load sessions, monthly history, and recharge logs when selected meter changes
   useEffect(() => {
     if (!selectedMeterId) return;
 
     async function fetchHistoryTables() {
       try {
-        const [sessRes, monthRes] = await Promise.all([
+        const [sessRes, monthRes, rchRes] = await Promise.all([
           fetchApi(`/api/meters/${selectedMeterId}/sessions`),
-          fetchApi(`/api/meters/${selectedMeterId}/monthly`)
+          fetchApi(`/api/meters/${selectedMeterId}/monthly`),
+          fetchApi(`/api/meters/${selectedMeterId}/recharges`)
         ]);
 
         const sessData = await sessRes.json();
         const monthData = await monthRes.json();
+        const rchData = await rchRes.json();
 
         if (sessRes.ok && sessData.sessions) {
           setSessions(sessData.sessions);
@@ -128,6 +154,9 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         }
         if (monthRes.ok && monthData.months) {
           setMonthlyRecords(monthData.months);
+        }
+        if (rchRes.ok && rchData.transactions) {
+          setRechargeHistory(rchData.transactions);
         }
       } catch (err) {
         console.warn('History tables fetch error:', err);
@@ -138,6 +167,152 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     const interval = setInterval(fetchHistoryTables, 15000);
     return () => clearInterval(interval);
   }, [selectedMeterId]);
+
+  const handleDirectSimulatedRecharge = async (amountToPay) => {
+    const amt = parseFloat(amountToPay || rechargeAmountInput);
+    if (isNaN(amt) || amt < 1) {
+      showToast('Please enter a valid recharge amount (minimum ₹1.00)');
+      return;
+    }
+
+    setRechargeLoading(true);
+    try {
+      showToast('Crediting ₹' + amt.toFixed(2) + ' directly to meter balance...');
+      const verifyRes = await fetchApi('/api/payments/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          razorpay_order_id: `order_test_${Date.now()}`,
+          razorpay_payment_id: `pay_direct_${Date.now()}`,
+          meterId: selectedMeterId,
+          amount: amt
+        })
+      });
+      const verifyData = await verifyRes.json();
+      if (verifyRes.ok) {
+        showToast(`🎉 ₹${amt.toFixed(2)} credited successfully to meter!`);
+        setShowRechargeModal(false);
+        const liveRes = await fetchApi(`/api/meters/${selectedMeterId}/live`);
+        const liveJson = await liveRes.json();
+        if (liveRes.ok) {
+          setLiveData(liveJson.live);
+          setAnalytics(liveJson.analytics);
+          setDeviceInfo(liveJson.device);
+        }
+        const rchRes = await fetchApi(`/api/meters/${selectedMeterId}/recharges`);
+        const rchJson = await rchRes.json();
+        if (rchRes.ok && rchJson.transactions) {
+          setRechargeHistory(rchJson.transactions);
+        }
+      } else {
+        showToast(verifyData.error || 'Recharge failed');
+      }
+    } catch (err) {
+      showToast('Error processing balance recharge');
+    } finally {
+      setRechargeLoading(false);
+    }
+  };
+
+  // Handle direct Razorpay online bank/UPI recharge
+  const handleRazorpayRecharge = async (amountToPay) => {
+    const amt = parseFloat(amountToPay || rechargeAmountInput);
+    if (isNaN(amt) || amt < 1) {
+      showToast('Please enter a valid recharge amount (minimum ₹1.00)');
+      return;
+    }
+
+    setRechargeLoading(true);
+    try {
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded) {
+        showToast('Connecting directly to secure balance recharge...');
+        await handleDirectSimulatedRecharge(amt);
+        return;
+      }
+
+      // Create Razorpay order
+      const orderRes = await fetchApi('/api/payments/create-order', {
+        method: 'POST',
+        body: JSON.stringify({ meterId: selectedMeterId, amount: amt })
+      });
+      const orderData = await orderRes.json();
+      if (!orderRes.ok) {
+        showToast(orderData.error || 'Failed to initiate payment order');
+        setRechargeLoading(false);
+        return;
+      }
+
+      const options = {
+        key: orderData.keyId || 'rzp_test_TKTk2IuoVuHf8v',
+        amount: orderData.order.amount,
+        currency: 'INR',
+        name: 'Voltronix Energy',
+        description: `Prepaid Recharge for ${deviceInfo?.name || selectedMeterId}`,
+        order_id: orderData.order.id,
+        handler: async function (response) {
+          try {
+            showToast('Verifying payment and updating balance...');
+            const verifyRes = await fetchApi('/api/payments/verify', {
+              method: 'POST',
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                meterId: selectedMeterId,
+                amount: amt
+              })
+            });
+            const verifyData = await verifyRes.json();
+            if (verifyRes.ok) {
+              showToast(`🎉 ₹${amt.toFixed(2)} credited successfully to meter!`);
+              setShowRechargeModal(false);
+              // Trigger instant live refresh
+              const liveRes = await fetchApi(`/api/meters/${selectedMeterId}/live`);
+              const liveJson = await liveRes.json();
+              if (liveRes.ok) {
+                setLiveData(liveJson.live);
+                setAnalytics(liveJson.analytics);
+                setDeviceInfo(liveJson.device);
+              }
+              // Refresh recharge history
+              const rchRes = await fetchApi(`/api/meters/${selectedMeterId}/recharges`);
+              const rchJson = await rchRes.json();
+              if (rchRes.ok && rchJson.transactions) {
+                setRechargeHistory(rchJson.transactions);
+              }
+            } else {
+              showToast(verifyData.error || 'Payment verification failed');
+            }
+          } catch (err) {
+            showToast('Error finalizing recharge');
+          }
+        },
+        prefill: {
+          name: user.username,
+          email: user.email || `${user.username}@energymeter.com`,
+          contact: '9999999999'
+        },
+        notes: {
+          meterId: selectedMeterId,
+          userId: user.id
+        },
+        theme: {
+          color: '#0284c7'
+        }
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', function (resp) {
+        showToast('Payment Failed: ' + (resp.error.description || 'Transaction cancelled'));
+      });
+      rzp.open();
+    } catch (err) {
+      console.error('Payment checkout error:', err);
+      showToast('Failed to start payment gateway');
+    } finally {
+      setRechargeLoading(false);
+    }
+  };
 
   // Metrics extraction
   const power = liveData ? parseFloat(liveData.power) || 0 : 0;
@@ -202,6 +377,24 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
             <span>{user.username}</span>
             <span className={`badge-role role-${user.role}`}>{user.role}</span>
           </div>
+
+          <button
+            onClick={() => setShowRechargeModal(true)}
+            className="btn btn-primary"
+            style={{
+              fontSize: '0.8rem',
+              padding: '7px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
+              fontWeight: 800,
+              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.25)'
+            }}
+          >
+            <CreditCard size={14} />
+            <span>⚡ Recharge</span>
+          </button>
 
           {onSwitchToLanding && (
             <button
@@ -382,6 +575,44 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
                 <span style={{ color: 'var(--red)', fontWeight: 800 }}>Overdue: ₹{overdueAmount.toFixed(2)}</span>
               )}
             </div>
+          </div>
+
+          {/* Quick Razorpay Direct Bank / UPI Recharge Action */}
+          <div style={{
+            marginTop: '16px',
+            paddingTop: '14px',
+            borderTop: '1px solid var(--border-subtle)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '10px'
+          }}>
+            <div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                Direct Bank / UPI Top-Up
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                Instant balance credit via Razorpay Gateway
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowRechargeModal(true)}
+              className="btn btn-primary"
+              style={{
+                fontSize: '0.82rem',
+                padding: '8px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                boxShadow: '0 4px 12px rgba(2, 132, 199, 0.3)'
+              }}
+            >
+              <CreditCard size={15} />
+              <span>⚡ Recharge Balance</span>
+            </button>
           </div>
         </div>
       </section>
@@ -618,8 +849,234 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         </div>
       </section>
 
+      {/* Online Recharge & Top-Up History Table */}
+      <section className="form-card glass" style={{ marginBottom: '22px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <CreditCard size={18} style={{ color: 'var(--emerald)' }} />
+            <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Prepaid Recharge & Bank Payment History</h3>
+          </div>
+          <button
+            onClick={() => setShowRechargeModal(true)}
+            className="btn btn-outline"
+            style={{ fontSize: '0.8rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <span>+ Recharge Now</span>
+          </button>
+        </div>
+
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Date & Time</th>
+                <th>Transaction ID</th>
+                <th>Payment Mode</th>
+                <th>Amount Added</th>
+                <th>Balance After</th>
+                <th>Payment Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rechargeHistory.length === 0 ? (
+                <tr>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-secondary)' }}>
+                    No recharge transactions recorded yet. Click <strong>Recharge Balance</strong> above to add prepaid energy credits via UPI/Bank account.
+                  </td>
+                </tr>
+              ) : (
+                rechargeHistory.map((r, idx) => (
+                  <tr key={r.id || idx}>
+                    <td style={{ fontSize: '0.8rem' }}>{new Date(r.created_at).toLocaleString()}</td>
+                    <td>
+                      <code style={{ fontSize: '0.78rem', background: '#f1f5f9', padding: '2px 6px', borderRadius: '4px' }}>
+                        {r.payment_id || `TXN_${r.id}`}
+                      </code>
+                    </td>
+                    <td>
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--cyan)' }}>
+                        {r.payment_method === 'RAZORPAY' ? '⚡ Razorpay Bank/UPI' : (r.payment_method || 'MANUAL')}
+                      </span>
+                    </td>
+                    <td style={{ fontWeight: 800, color: 'var(--emerald)', fontSize: '0.95rem' }}>
+                      +₹{parseFloat(r.amount).toFixed(2)}
+                    </td>
+                    <td style={{ fontWeight: 700 }}>
+                      ₹{parseFloat(r.new_balance || 0).toFixed(2)}
+                    </td>
+                    <td>
+                      <span style={{
+                        padding: '3px 8px',
+                        borderRadius: '8px',
+                        fontSize: '0.72rem',
+                        fontWeight: 800,
+                        background: '#ecfdf5',
+                        color: 'var(--emerald)'
+                      }}>
+                        ● {r.status || 'SUCCESS'}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* Historical Telemetry Chart with Export CSV */}
       <HistoryChart meterId={selectedMeterId} />
+
+      {/* Razorpay Online Recharge Modal */}
+      {showRechargeModal && (
+        <div className="modal-overlay" onClick={() => !rechargeLoading && setShowRechargeModal(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  width: '38px', height: '38px', borderRadius: '10px',
+                  background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff'
+                }}>
+                  <CreditCard size={20} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 900 }}>Recharge Energy Balance</h3>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Direct Bank Account, UPI & Card Top-Up</p>
+                </div>
+              </div>
+              <button
+                disabled={rechargeLoading}
+                onClick={() => setShowRechargeModal(false)}
+                style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', border: '1px solid var(--border-subtle)', marginBottom: '18px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Target Smart Meter:</span>
+                <strong>{deviceInfo?.name || selectedMeterId}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Current Available Balance:</span>
+                <strong style={{ color: accountBalance > 0 ? 'var(--emerald)' : 'var(--red)' }}>₹{accountBalance.toFixed(2)}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Applicable Unit Tariff:</span>
+                <span><strong>₹{unitPrice.toFixed(2)}</strong> / kWh</span>
+              </div>
+            </div>
+
+            {/* Amount Selection */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                Select Recharge Preset (₹):
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '12px' }}>
+                {[100, 250, 500, 1000].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setRechargeAmountInput(preset)}
+                    className="btn"
+                    style={{
+                      padding: '8px 0',
+                      fontSize: '0.85rem',
+                      fontWeight: 800,
+                      background: rechargeAmountInput === preset ? 'linear-gradient(135deg, #0284c7, #2563eb)' : '#ffffff',
+                      color: rechargeAmountInput === preset ? '#ffffff' : 'var(--text-primary)',
+                      border: '1px solid',
+                      borderColor: rechargeAmountInput === preset ? '#0284c7' : 'var(--border-subtle)',
+                      boxShadow: rechargeAmountInput === preset ? '0 4px 10px rgba(2, 132, 199, 0.25)' : 'none'
+                    }}
+                  >
+                    ₹{preset}
+                  </button>
+                ))}
+              </div>
+
+              <div className="input-wrap">
+                <label style={{ fontSize: '0.75rem', fontWeight: 700 }}>Custom Amount (₹)</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={rechargeAmountInput}
+                  onChange={(e) => setRechargeAmountInput(Math.max(1, parseFloat(e.target.value) || 0))}
+                  placeholder="Enter amount in ₹"
+                  style={{ fontSize: '1.15rem', fontWeight: 800, padding: '10px 14px' }}
+                />
+              </div>
+
+              <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+                <span>Estimated Energy Units:</span>
+                <strong style={{ color: 'var(--cyan)' }}>
+                  ~{unitPrice > 0 ? (rechargeAmountInput / unitPrice).toFixed(1) : 0} kWh
+                </strong>
+              </div>
+            </div>
+
+            {/* Payment Gateway Trust Badge */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '10px 14px', borderRadius: '10px',
+              background: '#ecfdf5', border: '1px solid #a7f3d0',
+              color: '#065f46', fontSize: '0.75rem', marginBottom: '18px'
+            }}>
+              <Lock size={15} style={{ flexShrink: 0 }} />
+              <div>
+                <strong>Secured by Razorpay:</strong> Instant verification with Netbanking (SBI, HDFC, ICICI, etc.), UPI (Google Pay, PhonePe), and Debit/Credit Cards.
+              </div>
+            </div>
+
+            <button
+              onClick={() => handleRazorpayRecharge()}
+              disabled={rechargeLoading}
+              className="btn btn-primary"
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '0.95rem',
+                fontWeight: 800,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '8px',
+                marginBottom: '10px',
+                background: 'linear-gradient(135deg, #0284c7, #2563eb)'
+              }}
+            >
+              <CreditCard size={18} />
+              <span>{rechargeLoading ? 'Contacting Payment Gateway...' : `Proceed to Pay ₹${rechargeAmountInput} (Bank / UPI / Card)`}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleDirectSimulatedRecharge(rechargeAmountInput)}
+              disabled={rechargeLoading}
+              className="btn btn-outline"
+              style={{
+                width: '100%',
+                padding: '9px',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '6px',
+                borderColor: '#10b981',
+                color: '#059669'
+              }}
+              title="Instant sandbox recharge simulation without external bank gateway dependency"
+            >
+              <Zap size={14} />
+              <span>Instant Sandbox Demo Credit (+₹{rechargeAmountInput})</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

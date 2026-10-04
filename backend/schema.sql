@@ -80,9 +80,26 @@ CREATE TABLE IF NOT EXISTS device_status_logs (
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 7. Recharge & Payment Transactions Table (Razorpay & Admin manual top-ups)
+CREATE TABLE IF NOT EXISTS recharge_transactions (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    amount NUMERIC(10,2) NOT NULL,
+    payment_id VARCHAR(100),
+    order_id VARCHAR(100),
+    payment_method VARCHAR(50) DEFAULT 'RAZORPAY', -- 'RAZORPAY', 'ADMIN_MANUAL', 'BANK_TRANSFER'
+    status VARCHAR(20) DEFAULT 'SUCCESS', -- 'SUCCESS', 'PENDING', 'FAILED'
+    previous_balance NUMERIC(10,2) DEFAULT 0.00,
+    new_balance NUMERIC(10,2) DEFAULT 0.00,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes for lightning fast queries
 CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
 CREATE INDEX IF NOT EXISTS idx_load_sessions_device ON load_sessions(device_id, start_time DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_device ON billing_records(device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_status_logs_device ON device_status_logs(device_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_recharge_device ON recharge_transactions(device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recharge_user ON recharge_transactions(user_id, created_at DESC);

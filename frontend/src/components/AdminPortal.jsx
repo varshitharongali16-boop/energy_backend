@@ -24,7 +24,10 @@ import {
   DollarSign,
   Clock,
   FileText,
-  AlertCircle
+  AlertCircle,
+  CreditCard,
+  Wallet,
+  ArrowUpRight
 } from 'lucide-react';
 
 export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, onLogout, showToast }) {
@@ -49,6 +52,12 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
   const [billBilledAmount, setBillBilledAmount] = useState('');
   const [billUnitPrice, setBillUnitPrice] = useState('');
   const [billNotes, setBillNotes] = useState('');
+
+  // Top-Up Balance State (Admin adding amount summed to user's balance)
+  const [topupAmount, setTopupAmount] = useState('500.00');
+  const [topupNotes, setTopupNotes] = useState('');
+  const [topupLoading, setTopupLoading] = useState(false);
+  const [rechargeHistory, setRechargeHistory] = useState([]);
 
   // New Device Form State
   const [devId, setDevId] = useState('');
@@ -118,11 +127,21 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
     setInspectedMeterId(meterId);
     setLoadingMeterDetails(true);
     try {
-      const res = await fetchApi(`/api/admin/meters/${meterId}/details`);
+      const [res, rechRes] = await Promise.all([
+        fetchApi(`/api/admin/meters/${meterId}/details`),
+        fetchApi(`/api/meters/${meterId}/recharges`)
+      ]);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to fetch meter details');
 
       setMeterDetails(data);
+      if (rechRes.ok) {
+        const rechData = await rechRes.json();
+        setRechargeHistory(rechData.transactions || []);
+      } else {
+        setRechargeHistory([]);
+      }
+
       setBillOverdue(data.device.overdue_amount !== undefined ? data.device.overdue_amount : '0.00');
       setBillPaid(data.device.paid_amount !== undefined ? data.device.paid_amount : '0.00');
       setBillRecharge(data.device.recharge_amount !== undefined ? data.device.recharge_amount : '1000.00');
@@ -136,6 +155,43 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       showToast(err.message);
     } finally {
       setLoadingMeterDetails(false);
+    }
+  };
+
+  const handleAdminTopup = async (e) => {
+    if (e) e.preventDefault();
+    if (!inspectedMeterId || !topupAmount || parseFloat(topupAmount) <= 0) {
+      showToast('Please enter a valid top-up amount');
+      return;
+    }
+
+    setTopupLoading(true);
+    try {
+      const res = await fetchApi(`/api/meters/${inspectedMeterId}/topup`, {
+        method: 'POST',
+        body: JSON.stringify({
+          topupAmount: parseFloat(topupAmount),
+          notes: topupNotes || 'Admin credited top-up (Summed to user balance)'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to apply balance top-up');
+
+      showToast(`Successfully credited ₹${parseFloat(topupAmount).toFixed(2)}! New balance: ₹${parseFloat(data.meter?.recharge_amount || 0).toFixed(2)}`);
+      setTopupAmount('500.00');
+      setTopupNotes('');
+
+      const mIp = meterDetails?.device?.local_ip || meterDetails?.device?.localIp;
+      if (mIp) triggerLocalEspSync(mIp);
+
+      handleInspectMeter(inspectedMeterId);
+      loadData();
+      loadDatabaseStats();
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTopupLoading(false);
     }
   };
 
@@ -583,6 +639,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                     <th>Device ID</th>
                     <th>Name</th>
                     <th>Assigned Consumer</th>
+                    <th>Quota Balance (₹)</th>
                     <th>Tariff Rate</th>
                     <th>Overdue (₹)</th>
                     <th>Paid (₹)</th>
@@ -593,7 +650,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                 <tbody>
                   {devices.length === 0 ? (
                     <tr>
-                      <td colSpan="8" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-secondary)' }}>
+                      <td colSpan="9" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-secondary)' }}>
                         No meters registered yet. Use the form above to provision your first ESP32 meter.
                       </td>
                     </tr>
@@ -612,6 +669,9 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                           </td>
                           <td>{d.name}</td>
                           <td>{d.assigned_username || <span style={{ color: '#94a3b8' }}>Unassigned</span>}</td>
+                          <td>
+                            <strong style={{ color: 'var(--emerald)' }}>₹{parseFloat(d.recharge_amount || 0).toFixed(2)}</strong>
+                          </td>
                           <td style={{ fontWeight: 700 }}>₹{parseFloat(d.unit_price).toFixed(2)}</td>
                           <td style={{ color: parseFloat(d.overdue_amount) > 0 ? 'var(--red)' : 'var(--text-secondary)', fontWeight: 700 }}>
                             ₹{parseFloat(d.overdue_amount || 0).toFixed(2)}
@@ -1053,6 +1113,99 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                   </div>
                 </div>
 
+                {/* Balance Top-Up Section (Summing to User's Existing Balance) */}
+                <div style={{ background: '#f0fdf4', padding: '18px 20px', borderRadius: '16px', border: '1px solid #bbf7d0', marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Wallet size={18} style={{ color: 'var(--emerald)' }} />
+                      <h4 style={{ fontSize: '0.95rem', fontWeight: 800, color: '#166534' }}>
+                        Add Balance Top-Up (Summed to User's Balance)
+                      </h4>
+                    </div>
+                    <span style={{ fontSize: '0.75rem', background: '#dcfce7', color: '#15803d', padding: '3px 10px', borderRadius: '20px', fontWeight: 800 }}>
+                      ⚡ Automatic Balance Summation
+                    </span>
+                  </div>
+                  <p style={{ fontSize: '0.78rem', color: '#166534', marginBottom: '14px', lineHeight: 1.5 }}>
+                    Enter an amount to credit to this consumer's meter. The amount is <strong>added (summed)</strong> to their existing balance. If the user has any overdue balance, the top-up automatically pays off overdue dues first and credits the remainder to their available balance.
+                  </p>
+
+                  <form onSubmit={handleAdminTopup}>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                      {[100, 250, 500, 1000, 2000].map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => setTopupAmount(amt.toFixed(2))}
+                          className="btn btn-outline"
+                          style={{
+                            fontSize: '0.78rem',
+                            padding: '4px 12px',
+                            background: topupAmount === amt.toFixed(2) ? 'var(--emerald)' : '#ffffff',
+                            color: topupAmount === amt.toFixed(2) ? '#ffffff' : '#166534',
+                            borderColor: '#86efac',
+                            fontWeight: 700
+                          }}
+                        >
+                          +₹{amt}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                      <div className="input-wrap">
+                        <label style={{ color: '#166534', fontWeight: 700 }}>Top-Up Amount to Add (₹)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="1"
+                          placeholder="e.g. 500.00"
+                          value={topupAmount}
+                          onChange={(e) => setTopupAmount(e.target.value)}
+                          required
+                          style={{ borderColor: '#86efac' }}
+                        />
+                      </div>
+
+                      <div className="input-wrap">
+                        <label style={{ color: '#166534', fontWeight: 700 }}>Top-Up Audit Note</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Counter cash deposit / manual bank transfer"
+                          value={topupNotes}
+                          onChange={(e) => setTopupNotes(e.target.value)}
+                          style={{ borderColor: '#86efac' }}
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={topupLoading}
+                      className="btn btn-primary"
+                      style={{
+                        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                        border: 'none',
+                        padding: '9px 20px',
+                        fontSize: '0.84rem',
+                        fontWeight: 800
+                      }}
+                    >
+                      {topupLoading ? (
+                        <>
+                          <RefreshCw size={14} className="spin-icon" />
+                          <span>Crediting & Summing to Balance...</span>
+                        </>
+                      ) : (
+                        <>
+                          <PlusCircle size={15} />
+                          <span>Credit + Sum ₹{parseFloat(topupAmount || 0).toFixed(2)} to Balance</span>
+                        </>
+                      )}
+                    </button>
+                  </form>
+                </div>
+
                 {/* Billing, Recharge & Tariff Rate Assignment Form */}
                 <div style={{ background: '#f8fafc', padding: '18px 20px', borderRadius: '16px', border: '1px solid var(--border-subtle)', marginBottom: '20px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -1302,6 +1455,86 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                               <td style={{ color: 'var(--red)', fontWeight: 700 }}>₹{parseFloat(b.overdue_amount).toFixed(2)}</td>
                               <td style={{ color: 'var(--emerald)', fontWeight: 700 }}>₹{parseFloat(b.paid_amount).toFixed(2)}</td>
                               <td style={{ fontSize: '0.78rem' }}>{b.notes}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Recharge & Bank Payment Ledger Table */}
+                <div style={{ marginTop: '22px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <CreditCard size={16} style={{ color: 'var(--emerald)' }} />
+                      <h4 style={{ fontSize: '0.88rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                        Prepaid Recharge & Bank Payment Ledger
+                      </h4>
+                    </div>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                      Total Recharges: {rechargeHistory.length}
+                    </span>
+                  </div>
+
+                  <div className="table-wrapper" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date & Time</th>
+                          <th>Method / Source</th>
+                          <th>Amount Credited</th>
+                          <th>Reference ID</th>
+                          <th>Balance Shift</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rechargeHistory.length === 0 ? (
+                          <tr>
+                            <td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '16px' }}>
+                              No recharge transactions recorded yet for this meter.
+                            </td>
+                          </tr>
+                        ) : (
+                          rechargeHistory.map((tx) => (
+                            <tr key={tx.id}>
+                              <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                {new Date(tx.created_at).toLocaleString()}
+                              </td>
+                              <td>
+                                <span style={{
+                                  fontSize: '0.72rem',
+                                  fontWeight: 800,
+                                  background: tx.payment_method === 'RAZORPAY_CHECKOUT' ? '#e0f2fe' : '#f1f5f9',
+                                  color: tx.payment_method === 'RAZORPAY_CHECKOUT' ? 'var(--cyan)' : 'var(--blue)',
+                                  padding: '2px 8px',
+                                  borderRadius: '6px'
+                                }}>
+                                  {tx.payment_method === 'RAZORPAY_CHECKOUT' ? '💳 RAZORPAY BANK' : '👤 ADMIN TOP-UP'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--emerald)', fontWeight: 800 }}>
+                                +₹{parseFloat(tx.amount).toFixed(2)}
+                              </td>
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                {tx.payment_id || tx.order_id || `TXN-${tx.id}`}
+                              </td>
+                              <td style={{ fontSize: '0.75rem' }}>
+                                ₹{parseFloat(tx.previous_balance || 0).toFixed(2)} → <strong style={{ color: 'var(--emerald)' }}>₹{parseFloat(tx.new_balance || 0).toFixed(2)}</strong>
+                              </td>
+                              <td>
+                                <span style={{
+                                  fontSize: '0.7rem',
+                                  fontWeight: 800,
+                                  color: tx.status === 'SUCCESS' ? 'var(--emerald)' : 'var(--amber)',
+                                  background: tx.status === 'SUCCESS' ? '#ecfdf5' : '#fffbeb',
+                                  padding: '2px 7px',
+                                  borderRadius: '10px'
+                                }}>
+                                  {tx.status}
+                                </span>
+                              </td>
                             </tr>
                           ))
                         )}

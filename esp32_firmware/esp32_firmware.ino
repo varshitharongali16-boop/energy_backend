@@ -389,7 +389,7 @@ void doCloudSync() {
         calculateValues();
       }
 
-      // Sync recharge amount set by Admin on website
+      // Sync recharge amount set by Admin on website or Razorpay
       int rechargeIdx = response.indexOf("\"rechargeAmount\":");
       if (rechargeIdx != -1) {
         float cloudRecharge = response.substring(rechargeIdx + 17).toFloat();
@@ -397,7 +397,8 @@ void doCloudSync() {
           rechargeAmount = cloudRecharge;
           prefs.putFloat("recharge", rechargeAmount);
           calculateValues();
-          Serial.printf("[Cloud] Admin credited Recharge Balance: Rs %.2f\n", rechargeAmount);
+          drawCurrentScreen(); // Trigger instant redraw on TFT screen
+          Serial.printf("[Cloud] Real-Time Recharge Balance Updated: Rs %.2f (Available: Rs %.2f)\n", rechargeAmount, accountBalance);
         }
       }
 
@@ -409,6 +410,7 @@ void doCloudSync() {
           unitPrice = cloudPrice;
           prefs.putFloat("price", unitPrice);
           calculateValues();
+          drawCurrentScreen();
           Serial.printf("[Cloud] Admin updated Tariff Unit Price: Rs %.2f/kWh\n", unitPrice);
         }
       }
@@ -423,6 +425,7 @@ void doCloudSync() {
           prefs.putFloat("lockCost", lockedBilledCost);
           prefs.putFloat("lockEnergy", lockedBilledEnergy);
           calculateValues();
+          drawCurrentScreen();
         }
       }
 
@@ -430,8 +433,9 @@ void doCloudSync() {
       int balIdx = response.indexOf("\"accountBalance\":");
       if (balIdx != -1) {
         float cloudBal = response.substring(balIdx + 17).toFloat();
-        if (cloudBal >= 0) {
+        if (cloudBal >= 0 && cloudBal != accountBalance) {
           accountBalance = cloudBal;
+          drawCurrentScreen();
         }
       }
 
@@ -439,8 +443,9 @@ void doCloudSync() {
       int dueIdx = response.indexOf("\"overdueAmount\":");
       if (dueIdx != -1) {
         float cloudDue = response.substring(dueIdx + 16).toFloat();
-        if (cloudDue >= 0) {
+        if (cloudDue >= 0 && cloudDue != overdueAmount) {
           overdueAmount = cloudDue;
+          drawCurrentScreen();
         }
       }
     } else {
@@ -1527,10 +1532,15 @@ void loop() {
     readPZEM();
   }
 
-  // 4. Hourly telemetry sync ONLY while load is active (Every 1 hour)
+  // 4. Real-Time Cloud Telemetry & Balance Synchronization (Every 5s for instant website balance updates)
+  if (millis() - lastCloudSync >= CLOUD_SYNC_INTERVAL) {
+    doCloudSync();
+  }
+
+  // 5. Hourly telemetry sync check while load is active
   checkHourlyLoadSync();
 
-  // 5. Periodic TFT Screen Updates & Transitions
+  // 6. Periodic TFT Screen Updates & Transitions
   updateTFTScreen();
 
   // 6. Periodically Persist Settings & Active Session State (Every 30s)
