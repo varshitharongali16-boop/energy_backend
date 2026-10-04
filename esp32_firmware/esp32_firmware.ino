@@ -67,6 +67,7 @@ float energy         = 0.0;
 float usedEnergy     = 0.0;
 float totalCost      = 0.0;     // Total billed (₹)
 float accountBalance = 1000.0;  // Available balance (₹)
+float overdueAmount  = 0.0;     // Overdue debt if balance < 0 (₹)
 float unitsAvailable = 0.0;     // kWh units purchasable from balance
 float lockedBilledCost   = 0.0; // Billed usage locked at previous tariff (₹)
 float lockedBilledEnergy = 0.0; // Energy reading when tariff was locked (kWh)
