@@ -275,6 +275,6 @@ CREATE TABLE IF NOT EXISTS recharge_transactions (
 
 1. **Integrated Razorpay Payment Gateway:** Incorporated credentials `rzp_test_TKTk2IuoVuHf8v` and `Ds3zr8o025nQPWke7yO41RPa`, enabling self-service direct bank account, UPI, and card recharges.
 2. **Implemented Additive Balance Top-Up:** Both user recharges and admin top-ups sum cumulatively onto current user balances, automatically liquidating overdue dues without data loss.
-3. **Configured Real-Time Synchronization:** Frontend polls live status every 2 seconds, while ESP32 executes 5-second cloud syncs and triggers instant TFT screen redraws on balance arrival.
+3. **Configured Real-Time Display Synchronization:** Frontend polls live status every 2 seconds, while ESP32 executes rapid 3-second cloud syncs and sub-second `/sync-now` local push notifications. The Available Balance and Tariff Rate are prominently integrated directly onto Screen 0 (LIVE LOAD) and within the universal top header across all display screens.
 4. **Documented Seed Credentials:** Detailed access authority for Administrator (`admin` / `123`) and Consumer User (`praveen` / `123`).
 5. **Captured Live System Artifacts:** Embedded actual high-resolution visual screenshots of both user and administrator dashboards.
