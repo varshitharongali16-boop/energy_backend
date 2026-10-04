@@ -19,7 +19,12 @@ import {
   Lock,
   Layers,
   Activity,
-  HardDrive
+  HardDrive,
+  Eye,
+  DollarSign,
+  Clock,
+  FileText,
+  AlertCircle
 } from 'lucide-react';
 
 export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, onLogout, showToast }) {
@@ -31,6 +36,17 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
   const [dbOverview, setDbOverview] = useState(null);
   const [dbLogs, setDbLogs] = useState([]);
   const [loadingDb, setLoadingDb] = useState(false);
+
+  // Meter Deep-Dive Inspection State
+  const [inspectedMeterId, setInspectedMeterId] = useState(null);
+  const [meterDetails, setMeterDetails] = useState(null);
+  const [loadingMeterDetails, setLoadingMeterDetails] = useState(false);
+
+  // Billing Update State for Inspected Meter
+  const [billOverdue, setBillOverdue] = useState('');
+  const [billPaid, setBillPaid] = useState('');
+  const [billUnitPrice, setBillUnitPrice] = useState('');
+  const [billNotes, setBillNotes] = useState('');
 
   // New Device Form State
   const [devId, setDevId] = useState('');
@@ -95,6 +111,52 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
     loadData();
     loadDatabaseStats();
   }, []);
+
+  const handleInspectMeter = async (meterId) => {
+    setInspectedMeterId(meterId);
+    setLoadingMeterDetails(true);
+    try {
+      const res = await fetchApi(`/api/admin/meters/${meterId}/details`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch meter details');
+
+      setMeterDetails(data);
+      setBillOverdue(data.device.overdue_amount !== undefined ? data.device.overdue_amount : '0.00');
+      setBillPaid(data.device.paid_amount !== undefined ? data.device.paid_amount : '0.00');
+      setBillUnitPrice(data.device.unit_price || '8.50');
+      setBillNotes('');
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setLoadingMeterDetails(false);
+    }
+  };
+
+  const handleUpdateBilling = async (e) => {
+    e.preventDefault();
+    if (!inspectedMeterId) return;
+
+    try {
+      const res = await fetchApi(`/api/admin/meters/${inspectedMeterId}/billing`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          overdueAmount: billOverdue,
+          paidAmount: billPaid,
+          unitPrice: billUnitPrice,
+          notes: billNotes || 'Admin updated billing records and new tariff'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update billing');
+
+      showToast('Billing and next-order tariff rates successfully updated!');
+      handleInspectMeter(inspectedMeterId);
+      loadData();
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
 
   const handleRegisterDevice = async (e) => {
     e.preventDefault();
@@ -263,7 +325,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       {/* Database & Fleet Health Stats Overview */}
       <section className="grid" style={{ marginBottom: '20px' }}>
         <div className="tile glass">
-          <div className="tile-icon" style={{ color: 'var(--cyan)' }}>
+          <div className="tile-icon" style={{ background: '#e0f2fe', color: 'var(--cyan)' }}>
             <Cpu size={22} />
           </div>
           <div className="tile-body">
@@ -273,7 +335,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
         </div>
 
         <div className="tile glass">
-          <div className="tile-icon" style={{ color: 'var(--purple)' }}>
+          <div className="tile-icon" style={{ background: '#f3e8ff', color: 'var(--purple)' }}>
             <Users size={22} />
           </div>
           <div className="tile-body">
@@ -283,7 +345,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
         </div>
 
         <div className="tile glass">
-          <div className="tile-icon" style={{ color: 'var(--emerald)' }}>
+          <div className="tile-icon" style={{ background: '#ecfdf5', color: 'var(--emerald)' }}>
             <Database size={22} />
           </div>
           <div className="tile-body">
@@ -295,7 +357,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
         </div>
 
         <div className="tile glass">
-          <div className="tile-icon" style={{ color: 'var(--blue)' }}>
+          <div className="tile-icon" style={{ background: '#f1f5f9', color: 'var(--blue)' }}>
             <HardDrive size={22} />
           </div>
           <div className="tile-body">
@@ -368,7 +430,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                   <label>Meter Display Name</label>
                   <input
                     type="text"
-                    placeholder="e.g. Main Lab Power Substation"
+                    placeholder="e.g. Second Floor Meter"
                     value={devName}
                     onChange={(e) => setDevName(e.target.value)}
                     required
@@ -403,7 +465,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '16px' }}>
                   <div className="input-wrap">
-                    <label>Tariff Rate (₹/kWh)</label>
+                    <label>Initial Tariff (₹/kWh)</label>
                     <input
                       type="number"
                       step="0.01"
@@ -432,31 +494,39 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
             {/* Quick Fleet Quick Info */}
             <section className="form-card glass">
               <h3 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '6px' }}>
-                ⚡ Hardware Connectivity Guide
+                ⚡ Meter Telemetry & Hourly Sync Notice
               </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: '1.5', marginBottom: '14px' }}>
-                All provisioned meters stream telemetry directly to this server:
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.55', marginBottom: '14px' }}>
+                Clicking on any meter in the fleet below opens its <strong>comprehensive live readings, billing dues manager, and online/offline history</strong>.
               </p>
-              <div style={{ background: 'rgba(0, 0, 0, 0.3)', padding: '12px', borderRadius: '10px', fontSize: '0.78rem', color: 'var(--cyan)', fontFamily: 'monospace', marginBottom: '14px', wordBreak: 'break-all' }}>
+              <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', padding: '12px 14px', borderRadius: '10px', fontSize: '0.78rem', color: 'var(--cyan)', fontFamily: 'monospace', marginBottom: '14px', wordBreak: 'break-all' }}>
                 POST /api/device/telemetry<br />
                 Headers: x-device-id, x-api-key
               </div>
-              <ul style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <li>Meters report Active Power, Voltage, Current, Energy & Power Factor.</li>
-                <li>When allowed quota reaches 0, the server triggers autonomous load cutoff.</li>
-                <li>Device status automatically updates to <strong>ONLINE</strong> whenever a ping is received within 25s.</li>
+              <ul style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <li>Supports hourly batch reports or live telemetry stream.</li>
+                <li>Admin can set <strong>Overdue Amount</strong> and <strong>Paid Amount</strong> per meter.</li>
+                <li>New tariff rates applied by admin take effect for <strong>subsequent billing orders</strong>.</li>
+                <li>System automatically logs exact timestamps when meters transition between <strong>ONLINE</strong> and <strong>OFFLINE</strong>.</li>
               </ul>
             </section>
           </div>
 
           {/* Fleet Table */}
           <section className="form-card glass">
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '4px' }}>
-              📡 Active Smart Meter Fleet
-            </h3>
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
-              Real-time synchronization status of all provisioned hardware nodes.
-            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 800 }}>
+                  📡 Active Smart Meter Fleet
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  Click on any meter row to inspect live readings, assign overdue/paid amounts, and modify tariff rates.
+                </p>
+              </div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--cyan)', background: '#e0f2fe', padding: '4px 10px', borderRadius: '20px' }}>
+                💡 Click any row to inspect
+              </span>
+            </div>
 
             <div className="table-wrapper">
               <table>
@@ -466,7 +536,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                     <th>Name</th>
                     <th>Assigned Consumer</th>
                     <th>Tariff Rate</th>
-                    <th>Quota Limit</th>
+                    <th>Overdue (₹)</th>
+                    <th>Paid (₹)</th>
                     <th>Live Status</th>
                     <th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
@@ -474,22 +545,32 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                 <tbody>
                   {devices.length === 0 ? (
                     <tr>
-                      <td colSpan="7" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-secondary)' }}>
+                      <td colSpan="8" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-secondary)' }}>
                         No meters registered yet. Use the form above to provision your first ESP32 meter.
                       </td>
                     </tr>
                   ) : (
                     devices.map((d) => {
-                      const isOnline = d.last_seen && Date.now() - new Date(d.last_seen).getTime() < 25000;
+                      const isOnline = d.last_seen && Date.now() - new Date(d.last_seen).getTime() < 35000;
                       return (
-                        <tr key={d.id}>
+                        <tr
+                          key={d.id}
+                          className="clickable-row"
+                          onClick={() => handleInspectMeter(d.id)}
+                          title="Click to view all readings, billing records, and online/offline logs"
+                        >
                           <td>
                             <strong>{d.id}</strong>
                           </td>
                           <td>{d.name}</td>
-                          <td>{d.assigned_username || <span style={{ color: '#64748b' }}>Unassigned</span>}</td>
-                          <td>₹{parseFloat(d.unit_price).toFixed(2)}</td>
-                          <td>{parseFloat(d.allowed_units).toFixed(1)} kWh</td>
+                          <td>{d.assigned_username || <span style={{ color: '#94a3b8' }}>Unassigned</span>}</td>
+                          <td style={{ fontWeight: 700 }}>₹{parseFloat(d.unit_price).toFixed(2)}</td>
+                          <td style={{ color: parseFloat(d.overdue_amount) > 0 ? 'var(--red)' : 'var(--text-secondary)', fontWeight: 700 }}>
+                            ₹{parseFloat(d.overdue_amount || 0).toFixed(2)}
+                          </td>
+                          <td style={{ color: 'var(--emerald)', fontWeight: 700 }}>
+                            ₹{parseFloat(d.paid_amount || 0).toFixed(2)}
+                          </td>
                           <td>
                             <span
                               style={{
@@ -497,23 +578,38 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                                 alignItems: 'center',
                                 gap: '6px',
                                 fontSize: '0.75rem',
-                                fontWeight: 700,
-                                color: isOnline ? 'var(--emerald)' : 'var(--red)'
+                                fontWeight: 800,
+                                color: isOnline ? 'var(--emerald)' : 'var(--red)',
+                                background: isOnline ? '#ecfdf5' : '#fef2f2',
+                                padding: '3px 8px',
+                                borderRadius: '12px'
                               }}
                             >
-                              {isOnline ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                              {isOnline ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
                               {isOnline ? 'ONLINE' : 'OFFLINE'}
                             </span>
                           </td>
-                          <td style={{ textAlign: 'right' }}>
-                            <button
-                              onClick={() => handleDeleteDevice(d)}
-                              className="btn btn-danger"
-                              style={{ padding: '6px 10px', fontSize: '0.75rem' }}
-                              title="Delete Meter"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                          <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                            <div style={{ display: 'inline-flex', gap: '8px' }}>
+                              <button
+                                onClick={() => handleInspectMeter(d.id)}
+                                className="btn btn-outline"
+                                style={{ padding: '6px 10px', fontSize: '0.75rem', color: 'var(--cyan)' }}
+                                title="Inspect Meter & Manage Billing"
+                              >
+                                <Eye size={13} />
+                                <span>Inspect</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleDeleteDevice(d)}
+                                className="btn btn-danger"
+                                style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+                                title="Delete Meter"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -687,29 +783,29 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>Connection Status</span>
-                <p style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--emerald)', marginTop: '4px' }}>
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 800 }}>Connection Status</span>
+                <p style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--emerald)', marginTop: '4px' }}>
                   ● {dbOverview?.status || 'Connected'}
                 </p>
               </div>
 
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>Telemetry Logs in DB</span>
-                <p style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--cyan)', marginTop: '4px' }}>
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 800 }}>Telemetry Logs in DB</span>
+                <p style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--cyan)', marginTop: '4px' }}>
                   {dbOverview?.totalTelemetryLogs?.toLocaleString() || 0} rows
                 </p>
               </div>
 
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>Total User Accounts</span>
-                <p style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--purple)', marginTop: '4px' }}>
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 800 }}>Total User Accounts</span>
+                <p style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--purple)', marginTop: '4px' }}>
                   {dbOverview?.totalUsers || users.length} users
                 </p>
               </div>
 
-              <div style={{ background: 'rgba(255,255,255,0.03)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>Latest Telemetry Timestamp</span>
+              <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 800 }}>Latest Telemetry Timestamp</span>
                 <p style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '4px' }}>
                   {dbOverview?.lastLog ? new Date(dbOverview.lastLog).toLocaleTimeString() : 'Awaiting data'}
                 </p>
@@ -760,14 +856,14 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                         </td>
                         <td>{parseFloat(log.voltage).toFixed(1)} V</td>
                         <td>{parseFloat(log.current).toFixed(2)} A</td>
-                        <td style={{ color: 'var(--cyan)', fontWeight: 700 }}>
+                        <td style={{ color: 'var(--cyan)', fontWeight: 800 }}>
                           {parseFloat(log.power).toFixed(1)} W
                         </td>
                         <td>{parseFloat(log.energy).toFixed(3)}</td>
                         <td>{parseFloat(log.pf).toFixed(2)}</td>
-                        <td>₹{parseFloat(log.cost).toFixed(2)}</td>
+                        <td style={{ fontWeight: 700 }}>₹{parseFloat(log.cost).toFixed(2)}</td>
                         <td>
-                          <span style={{ color: log.is_load_on ? 'var(--emerald)' : 'var(--red)', fontWeight: 700 }}>
+                          <span style={{ color: log.is_load_on ? 'var(--emerald)' : 'var(--red)', fontWeight: 800 }}>
                             {log.is_load_on ? 'ON' : 'OFF'}
                           </span>
                         </td>
@@ -782,6 +878,278 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
             </div>
           </section>
         </>
+      )}
+
+      {/* ======================================================== */}
+      {/* METER DEEP-DIVE & BILLING INSPECTION MODAL */}
+      {/* ======================================================== */}
+      {inspectedMeterId && (
+        <div className="modal-overlay" onClick={() => setInspectedMeterId(null)}>
+          <div className="modal-box large" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', paddingBottom: '12px', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Cpu size={22} style={{ color: 'var(--cyan)' }} />
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 900 }}>
+                    {meterDetails?.device?.name || inspectedMeterId}
+                  </h3>
+                  <span style={{ fontSize: '0.8rem', background: '#e0f2fe', color: 'var(--cyan)', padding: '3px 8px', borderRadius: '8px', fontWeight: 700 }}>
+                    {inspectedMeterId}
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                  Assigned Consumer: <strong>{meterDetails?.device?.assigned_username || 'Unassigned'}</strong> ({meterDetails?.device?.assigned_email || 'N/A'})
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '0.78rem',
+                    fontWeight: 800,
+                    color: meterDetails?.device?.isOnline ? 'var(--emerald)' : 'var(--red)',
+                    background: meterDetails?.device?.isOnline ? '#ecfdf5' : '#fef2f2',
+                    padding: '4px 10px',
+                    borderRadius: '20px'
+                  }}
+                >
+                  {meterDetails?.device?.isOnline ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  {meterDetails?.device?.isOnline ? 'ONLINE' : 'OFFLINE'}
+                </span>
+
+                <button
+                  onClick={() => setInspectedMeterId(null)}
+                  style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {loadingMeterDetails ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--cyan)' }}>
+                <RefreshCw size={24} className="spin-icon" style={{ marginBottom: '8px' }} />
+                <p>Loading real-time meter telemetry and billing history...</p>
+              </div>
+            ) : (
+              <>
+                {/* Real-time Meter Readings Grid */}
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                    ⚡ Real-Time Ingested Telemetry
+                  </h4>
+                  <div className="meter-detail-grid">
+                    <div className="meter-detail-card">
+                      <div className="label">Active Power</div>
+                      <div className="value" style={{ color: 'var(--cyan)' }}>
+                        {meterDetails?.latest ? parseFloat(meterDetails.latest.power).toFixed(1) : '0.0'} W
+                      </div>
+                    </div>
+
+                    <div className="meter-detail-card">
+                      <div className="label">True RMS Voltage</div>
+                      <div className="value">
+                        {meterDetails?.latest ? parseFloat(meterDetails.latest.voltage).toFixed(1) : '0.0'} V
+                      </div>
+                    </div>
+
+                    <div className="meter-detail-card">
+                      <div className="label">Line Current</div>
+                      <div className="value">
+                        {meterDetails?.latest ? parseFloat(meterDetails.latest.current).toFixed(2) : '0.00'} A
+                      </div>
+                    </div>
+
+                    <div className="meter-detail-card">
+                      <div className="label">Total Energy</div>
+                      <div className="value" style={{ color: 'var(--emerald)' }}>
+                        {meterDetails?.latest ? parseFloat(meterDetails.latest.energy).toFixed(3) : '0.000'} kWh
+                      </div>
+                    </div>
+
+                    <div className="meter-detail-card">
+                      <div className="label">Power Factor</div>
+                      <div className="value">
+                        {meterDetails?.latest ? parseFloat(meterDetails.latest.pf).toFixed(2) : '1.00'}
+                      </div>
+                    </div>
+
+                    <div className="meter-detail-card">
+                      <div className="label">Relay Load State</div>
+                      <div className="value" style={{ color: meterDetails?.latest?.is_load_on ? 'var(--emerald)' : 'var(--red)' }}>
+                        {meterDetails?.latest?.is_load_on ? 'ON (Active)' : 'OFF (Cutoff)'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Billing & Tariff Rate Assignment Form */}
+                <div style={{ background: '#f8fafc', padding: '18px 20px', borderRadius: '16px', border: '1px solid var(--border-subtle)', marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <DollarSign size={18} style={{ color: 'var(--cyan)' }} />
+                    <h4 style={{ fontSize: '0.95rem', fontWeight: 800 }}>
+                      Manage Billing, Dues & Unit Price Rates
+                    </h4>
+                  </div>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+                    Assign overdue dues, record payments, and set new tariff rates.
+                    <span style={{ color: 'var(--blue)', fontWeight: 700 }}> Note: New unit prices apply exclusively to future orders/cycles and will not retroactively alter previous energy records.</span>
+                  </p>
+
+                  <form onSubmit={handleUpdateBilling}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+                      <div className="input-wrap">
+                        <label>Overdue Dues Amount (₹)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={billOverdue}
+                          onChange={(e) => setBillOverdue(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="input-wrap">
+                        <label>Paid Amount (₹)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={billPaid}
+                          onChange={(e) => setBillPaid(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="input-wrap">
+                        <label>New Tariff Unit Price (₹/kWh)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={billUnitPrice}
+                          onChange={(e) => setBillUnitPrice(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="input-wrap" style={{ marginBottom: '14px' }}>
+                      <label>Audit Log Note</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Cleared past dues, set revised tariff for next cycle"
+                        value={billNotes}
+                        onChange={(e) => setBillNotes(e.target.value)}
+                      />
+                    </div>
+
+                    <button type="submit" className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem' }}>
+                      <Save size={14} />
+                      <span>Save Billing & Tariff Update</span>
+                    </button>
+                  </form>
+                </div>
+
+                {/* Online / Offline Status Logs */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <Clock size={16} style={{ color: 'var(--purple)' }} />
+                    <h4 style={{ fontSize: '0.88rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                      Online & Offline Transition Log History
+                    </h4>
+                  </div>
+
+                  <div className="table-wrapper" style={{ maxHeight: '160px', overflowY: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Status</th>
+                          <th>Recorded Timestamp</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(!meterDetails?.statusLogs || meterDetails.statusLogs.length === 0) ? (
+                          <tr>
+                            <td colSpan="2" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '12px' }}>
+                              No state transitions recorded yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          meterDetails.statusLogs.map((s) => (
+                            <tr key={s.id}>
+                              <td>
+                                <span style={{
+                                  color: s.status === 'ONLINE' ? 'var(--emerald)' : 'var(--red)',
+                                  fontWeight: 800,
+                                  background: s.status === 'ONLINE' ? '#ecfdf5' : '#fef2f2',
+                                  padding: '2px 8px',
+                                  borderRadius: '10px',
+                                  fontSize: '0.75rem'
+                                }}>
+                                  ● {s.status}
+                                </span>
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                {new Date(s.timestamp).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Billing History Table */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <FileText size={16} style={{ color: 'var(--blue)' }} />
+                    <h4 style={{ fontSize: '0.88rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                      Billing & Tariff Audit History
+                    </h4>
+                  </div>
+
+                  <div className="table-wrapper" style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Timestamp</th>
+                          <th>Unit Price (₹/kWh)</th>
+                          <th>Overdue (₹)</th>
+                          <th>Paid (₹)</th>
+                          <th>Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(!meterDetails?.billingRecords || meterDetails.billingRecords.length === 0) ? (
+                          <tr>
+                            <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '12px' }}>
+                              No billing audit entries yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          meterDetails.billingRecords.map((b) => (
+                            <tr key={b.id}>
+                              <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                {new Date(b.created_at).toLocaleString()}
+                              </td>
+                              <td style={{ fontWeight: 700 }}>₹{parseFloat(b.unit_price_applied).toFixed(2)}</td>
+                              <td style={{ color: 'var(--red)', fontWeight: 700 }}>₹{parseFloat(b.overdue_amount).toFixed(2)}</td>
+                              <td style={{ color: 'var(--emerald)', fontWeight: 700 }}>₹{parseFloat(b.paid_amount).toFixed(2)}</td>
+                              <td style={{ fontSize: '0.78rem' }}>{b.notes}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Edit User & Change Password Modal */}

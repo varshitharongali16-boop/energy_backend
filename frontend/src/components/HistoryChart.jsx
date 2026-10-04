@@ -48,8 +48,8 @@ export default function HistoryChart({ meterId }) {
                 {
                   label: 'Power (Watts)',
                   data: powerData,
-                  borderColor: '#00f0ff',
-                  backgroundColor: 'rgba(0, 240, 255, 0.08)',
+                  borderColor: '#0284c7',
+                  backgroundColor: 'rgba(2, 132, 199, 0.08)',
                   fill: true,
                   tension: 0.35,
                   borderWidth: 2,
@@ -59,7 +59,7 @@ export default function HistoryChart({ meterId }) {
                 {
                   label: 'Energy (kWh)',
                   data: energyData,
-                  borderColor: '#10b981',
+                  borderColor: '#059669',
                   backgroundColor: 'transparent',
                   borderWidth: 2,
                   borderDash: [4, 4],
@@ -74,21 +74,21 @@ export default function HistoryChart({ meterId }) {
               interaction: { mode: 'index', intersect: false },
               scales: {
                 x: {
-                  grid: { color: 'rgba(255, 255, 255, 0.04)' },
-                  ticks: { color: '#64748b', maxTicksLimit: 8 }
+                  grid: { color: 'rgba(226, 232, 240, 0.8)' },
+                  ticks: { color: '#475569', maxTicksLimit: 8, font: { weight: '600' } }
                 },
                 y: {
-                  grid: { color: 'rgba(255, 255, 255, 0.06)' },
-                  ticks: { color: '#94a3b8' }
+                  grid: { color: 'rgba(226, 232, 240, 0.8)' },
+                  ticks: { color: '#475569', font: { weight: '600' } }
                 },
                 y1: {
                   position: 'right',
                   grid: { drawOnChartArea: false },
-                  ticks: { color: '#10b981' }
+                  ticks: { color: '#059669', font: { weight: '600' } }
                 }
               },
               plugins: {
-                legend: { labels: { color: '#cbd5e1', font: { size: 12 } } }
+                legend: { labels: { color: '#0f172a', font: { size: 12, weight: '700' } } }
               }
             }
           });

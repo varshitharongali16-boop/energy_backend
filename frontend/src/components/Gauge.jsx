@@ -24,14 +24,16 @@ export default function Gauge({
     <div
       className="power-card glass"
       style={{
-        borderColor: isOverloaded ? 'rgba(239, 68, 68, 0.5)' : undefined,
-        boxShadow: isOverloaded ? '0 0 25px rgba(239, 68, 68, 0.25)' : undefined
+        borderColor: isOverloaded ? '#fca5a5' : undefined,
+        boxShadow: isOverloaded ? '0 4px 20px rgba(220, 38, 38, 0.2)' : undefined
       }}
     >
       <div className="card-top">
         <span className="card-label">Active Power Demand</span>
-        <div className={`load-pill ${isLoadOn ? (isOverloaded ? 'load-off' : 'load-on') : 'load-off'}`}
-             style={isOverloaded ? { background: 'rgba(239, 68, 68, 0.2)', color: 'var(--red)', borderColor: 'var(--red)' } : {}}>
+        <div
+          className={`load-pill ${isLoadOn ? (isOverloaded ? 'load-off' : 'load-on') : 'load-off'}`}
+          style={isOverloaded ? { background: '#fef2f2', color: 'var(--red)', borderColor: '#fca5a5' } : {}}
+        >
           <span>●</span>
           <span>{isOverloaded ? 'HIGH LOAD WARN' : (isLoadOn ? 'LOAD ACTIVE' : 'STANDBY')}</span>
         </div>
@@ -41,10 +43,10 @@ export default function Gauge({
         <svg className="gauge-svg" viewBox="0 0 200 125">
           <defs>
             <linearGradient id="powerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#00f0ff" />
-              <stop offset="50%" stopColor="#3b82f6" />
-              <stop offset="85%" stopColor="#f59e0b" />
-              <stop offset="100%" stopColor="#ef4444" />
+              <stop offset="0%" stopColor="#0284c7" />
+              <stop offset="45%" stopColor="#2563eb" />
+              <stop offset="80%" stopColor="#d97706" />
+              <stop offset="100%" stopColor="#dc2626" />
             </linearGradient>
           </defs>
           <path className="gauge-track" d="M 25 105 A 75 75 0 0 1 175 105" />
@@ -53,18 +55,14 @@ export default function Gauge({
             d="M 25 105 A 75 75 0 0 1 175 105"
             style={{
               strokeDashoffset: strokeOffset,
-              filter: isOverloaded ? 'drop-shadow(0 0 10px rgba(239, 68, 68, 0.8))' : 'drop-shadow(0 0 6px rgba(0, 240, 255, 0.4))'
+              filter: isOverloaded ? 'drop-shadow(0 2px 8px rgba(220, 38, 38, 0.5))' : 'drop-shadow(0 2px 6px rgba(2, 132, 199, 0.35))'
             }}
           />
         </svg>
         <div className="power-readout">
           <div
             className="power-val"
-            style={isOverloaded ? {
-              background: 'linear-gradient(180deg, #ffffff 40%, var(--red) 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent'
-            } : {}}
+            style={{ color: isOverloaded ? 'var(--red)' : 'var(--text-primary)' }}
           >
             {power.toFixed(1)}
           </div>

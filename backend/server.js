@@ -82,21 +82,41 @@ app.get('/api/status', (req, res) => {
 // ESP32 INGESTION ENDPOINT (Called by ESP32 via HTTPS POST)
 // ============================================================
 app.post('/api/device/telemetry', verifyDevice, async (req, res) => {
-  const { voltage, current, power, pf, energy, cost, isLoadOn } = req.body;
+  const { voltage, current, power, pf, energy, cost, isLoadOn, correctionNum } = req.body;
 
   try {
+    const corr = parseFloat(correctionNum) || 1.0;
+    const adjVoltage = (parseFloat(voltage) || 0) * corr;
+    const adjCurrent = (parseFloat(current) || 0) * corr;
+    const adjPower = (parseFloat(power) || 0) * corr;
+    const adjEnergy = parseFloat(energy) || 0;
+    const adjCost = parseFloat(cost) || 0;
+
+    // Check if device was previously offline (> 35s or null)
+    const wasOffline = !req.device.last_seen || (Date.now() - new Date(req.device.last_seen).getTime() > 35000);
+    if (wasOffline) {
+      await db.query(
+        `INSERT INTO device_status_logs (device_id, status, timestamp) VALUES ($1, 'ONLINE', CURRENT_TIMESTAMP)`,
+        [req.device.id]
+      );
+      await db.query(
+        `UPDATE devices SET last_online_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [req.device.id]
+      );
+    }
+
     // 1. Insert telemetry reading into PostgreSQL
     await db.query(
       `INSERT INTO telemetry (device_id, voltage, current, power, pf, energy, cost, is_load_on)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         req.device.id,
-        parseFloat(voltage) || 0,
-        parseFloat(current) || 0,
-        parseFloat(power) || 0,
+        adjVoltage,
+        adjCurrent,
+        adjPower,
         parseFloat(pf) || 0,
-        parseFloat(energy) || 0,
-        parseFloat(cost) || 0,
+        adjEnergy,
+        adjCost,
         Boolean(isLoadOn)
       ]
     );
@@ -255,7 +275,11 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
         name: device.name,
         unitPrice,
         allowedUnits,
+        overdueAmount: parseFloat(device.overdue_amount || 0),
+        paidAmount: parseFloat(device.paid_amount || 0),
         lastSeen: device.last_seen,
+        lastOnlineAt: device.last_online_at,
+        lastOfflineAt: device.last_offline_at,
         isOnline
       },
       live: latest,
@@ -507,6 +531,119 @@ app.delete('/api/admin/devices/:id', verifyToken, requireAdmin, async (req, res)
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete device' });
+  }
+});
+
+// Deep-Dive Meter Inspection & Details (Admin)
+app.get('/api/admin/meters/:id/details', verifyToken, requireAdmin, async (req, res) => {
+  const deviceId = req.params.id;
+
+  try {
+    const devRes = await db.query(
+      `SELECT d.*, u.username as assigned_username, u.email as assigned_email
+       FROM devices d
+       LEFT JOIN users u ON d.assigned_user_id = u.id
+       WHERE d.id = $1`,
+      [deviceId]
+    );
+
+    if (devRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Meter not found' });
+    }
+
+    const device = devRes.rows[0];
+    const isOnline = device.last_seen && (Date.now() - new Date(device.last_seen).getTime() < 35000);
+
+    // If offline and last_offline_at needs updating
+    if (!isOnline && device.last_seen) {
+      const offlineTime = new Date(new Date(device.last_seen).getTime() + 35000);
+      if (!device.last_offline_at || new Date(device.last_offline_at) < new Date(device.last_seen)) {
+        await db.query(
+          `UPDATE devices SET last_offline_at = $1 WHERE id = $2`,
+          [offlineTime, deviceId]
+        );
+        await db.query(
+          `INSERT INTO device_status_logs (device_id, status, timestamp) VALUES ($1, 'OFFLINE', $2)`,
+          [deviceId, offlineTime]
+        );
+        device.last_offline_at = offlineTime;
+      }
+    }
+
+    // Parallel fetch: latest telemetry, recent 30 logs, billing records, status logs
+    const [latestTel, logsRes, billingRes, statusRes] = await Promise.all([
+      db.query(`SELECT * FROM telemetry WHERE device_id = $1 ORDER BY recorded_at DESC LIMIT 1`, [deviceId]),
+      db.query(`SELECT * FROM telemetry WHERE device_id = $1 ORDER BY recorded_at DESC LIMIT 30`, [deviceId]),
+      db.query(`SELECT * FROM billing_records WHERE device_id = $1 ORDER BY created_at DESC LIMIT 15`, [deviceId]),
+      db.query(`SELECT * FROM device_status_logs WHERE device_id = $1 ORDER BY timestamp DESC LIMIT 15`, [deviceId])
+    ]);
+
+    res.json({
+      device: {
+        ...device,
+        isOnline
+      },
+      latest: latestTel.rows[0] || null,
+      telemetryLogs: logsRes.rows,
+      billingRecords: billingRes.rows,
+      statusLogs: statusRes.rows
+    });
+  } catch (err) {
+    console.error('Error fetching meter details:', err);
+    res.status(500).json({ error: 'Failed to retrieve meter details' });
+  }
+});
+
+// Assign Overdue / Paid Amounts & Update Tariff Unit Price for next orders (Admin)
+app.put('/api/admin/meters/:id/billing', verifyToken, requireAdmin, async (req, res) => {
+  const deviceId = req.params.id;
+  const { overdueAmount, paidAmount, unitPrice, notes } = req.body;
+
+  try {
+    const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
+    if (devQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const currentDevice = devQuery.rows[0];
+    const newOverdue = overdueAmount !== undefined ? parseFloat(overdueAmount) : parseFloat(currentDevice.overdue_amount || 0);
+    const newPaid = paidAmount !== undefined ? parseFloat(paidAmount) : parseFloat(currentDevice.paid_amount || 0);
+    const newUnitPrice = unitPrice !== undefined ? parseFloat(unitPrice) : parseFloat(currentDevice.unit_price);
+
+    // 1. Record billing audit record with timestamp (records when tariff / overdue / paid was assigned)
+    const billingLogRes = await db.query(
+      `INSERT INTO billing_records (device_id, overdue_amount, paid_amount, unit_price_applied, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        deviceId,
+        newOverdue,
+        newPaid,
+        newUnitPrice,
+        notes || 'Tariff/Balance assigned by Administrator (applies to subsequent orders)'
+      ]
+    );
+
+    // 2. Update device parameters
+    const updateRes = await db.query(
+      `UPDATE devices
+       SET overdue_amount = $1,
+           paid_amount = $2,
+           unit_price = $3
+       WHERE id = $4
+       RETURNING *`,
+      [newOverdue, newPaid, newUnitPrice, deviceId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Billing parameters and new unit price successfully applied for next orders.',
+      device: updateRes.rows[0],
+      record: billingLogRes.rows[0]
+    });
+  } catch (err) {
+    console.error('Billing update error:', err);
+    res.status(500).json({ error: 'Failed to update billing and tariff records' });
   }
 });
 

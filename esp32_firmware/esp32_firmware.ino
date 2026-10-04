@@ -22,12 +22,21 @@ const char* CLOUD_API_URL = "https://energy-backend-gwex.onrender.com/api/device
 const char* DEVICE_ID     = "ESP32_METER_01";
 const char* DEVICE_API_KEY = "meter_secret_key_123";
 
-const unsigned long CLOUD_SYNC_INTERVAL = 5000UL; // Send to cloud every 5 seconds
+// CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
+// Default is 1.000. If your external multimeter reads 230V and PZEM reads 225V,
+// set CORRECTION_NUM = 230.0 / 225.0 = 1.022
+float CORRECTION_NUM = 1.000;
+
+// CLOUD TRANSMISSION INTERVAL (Hourly Sync: 1 request every 60 minutes)
+// 3600000UL = 1 hour (3600 seconds * 1000ms). For testing, you can use 30000UL (30s)
+#define HOURLY_SYNC_MODE true
+const unsigned long CLOUD_SYNC_INTERVAL = HOURLY_SYNC_MODE ? 3600000UL : 15000UL;
 unsigned long lastCloudSync = 0;
 
 // ============================================================
 // WIFI CONFIGURATION
 // ============================================================
+// Enter your local Wi-Fi SSID and Password here
 const char* WIFI_SSID = "Nothing Phone (3a)_2505";
 const char* WIFI_PASS = "praveen DSP";
 
@@ -216,7 +225,8 @@ void sendTelemetryToCloud() {
     payload += "\"pf\":" + String(powerFactor, 2) + ",";
     payload += "\"energy\":" + String(usedEnergy, 4) + ",";
     payload += "\"cost\":" + String(totalCost, 2) + ",";
-    payload += "\"isLoadOn\":" + String(loadON ? "true" : "false");
+    payload += "\"isLoadOn\":" + String(loadON ? "true" : "false") + ",";
+    payload += "\"correctionNum\":" + String(CORRECTION_NUM, 4);
     payload += "}";
 
     int httpCode = http.POST(payload);

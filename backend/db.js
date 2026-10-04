@@ -59,8 +59,33 @@ async function initDatabase() {
         recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS billing_records (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+        overdue_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+        paid_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+        unit_price_applied NUMERIC(8,2) NOT NULL,
+        notes TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS device_status_logs (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Auto-migrations for existing tables
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS overdue_amount NUMERIC(10,2) DEFAULT 0.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10,2) DEFAULT 0.00;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_online_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_offline_at TIMESTAMP WITH TIME ZONE;
+
       CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at DESC);
       CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
+      CREATE INDEX IF NOT EXISTS idx_billing_device ON billing_records(device_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_status_logs_device ON device_status_logs(device_id, timestamp DESC);
     `);
 
     // 2. Check if default Admin exists; if not, create one

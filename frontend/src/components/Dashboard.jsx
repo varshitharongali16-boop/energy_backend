@@ -518,7 +518,31 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
             <div className="tile-label">Tariff Rate</div>
             <div className="tile-val">
               ₹{unitPrice.toFixed(2)}
-              <span className="tile-unit">/u</span>
+              <span className="tile-unit">/kWh</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="tile glass">
+          <div className="tile-icon" style={{ color: 'var(--red)' }}>
+            <AlertTriangle size={22} />
+          </div>
+          <div className="tile-body">
+            <div className="tile-label">Overdue Dues</div>
+            <div className="tile-val" style={{ color: 'var(--red)' }}>
+              ₹{deviceInfo ? parseFloat(deviceInfo.overdueAmount || 0).toFixed(2) : '0.00'}
+            </div>
+          </div>
+        </div>
+
+        <div className="tile glass">
+          <div className="tile-icon" style={{ color: 'var(--emerald)' }}>
+            <DollarSign size={22} />
+          </div>
+          <div className="tile-body">
+            <div className="tile-label">Total Paid</div>
+            <div className="tile-val" style={{ color: 'var(--emerald)' }}>
+              ₹{deviceInfo ? parseFloat(deviceInfo.paidAmount || 0).toFixed(2) : '0.00'}
             </div>
           </div>
         </div>

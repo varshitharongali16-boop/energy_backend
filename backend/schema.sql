@@ -20,8 +20,12 @@ CREATE TABLE IF NOT EXISTS devices (
     assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     unit_price NUMERIC(8,2) DEFAULT 8.50,
     allowed_units NUMERIC(10,3) DEFAULT 100.00,
+    overdue_amount NUMERIC(10,2) DEFAULT 0.00,
+    paid_amount NUMERIC(10,2) DEFAULT 0.00,
     is_active BOOLEAN DEFAULT true,
     last_seen TIMESTAMP WITH TIME ZONE,
+    last_online_at TIMESTAMP WITH TIME ZONE,
+    last_offline_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -39,6 +43,27 @@ CREATE TABLE IF NOT EXISTS telemetry (
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes for lightning fast queries on dashboard charts
+-- 4. Billing & Tariff Audit Records Table
+CREATE TABLE IF NOT EXISTS billing_records (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    overdue_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    paid_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+    unit_price_applied NUMERIC(8,2) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. Online / Offline Status Transition Logs Table
+CREATE TABLE IF NOT EXISTS device_status_logs (
+    id SERIAL PRIMARY KEY,
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL, -- 'ONLINE' or 'OFFLINE'
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for lightning fast queries
 CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
+CREATE INDEX IF NOT EXISTS idx_billing_device ON billing_records(device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_logs_device ON device_status_logs(device_id, timestamp DESC);

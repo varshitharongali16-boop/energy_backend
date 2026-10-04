@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Zap,
   Shield,
@@ -13,10 +13,24 @@ import {
   Layers,
   AlertTriangle,
   Flame,
-  CheckCircle2
+  CheckCircle2,
+  TrendingUp,
+  Sparkles
 } from 'lucide-react';
 
 export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashboard }) {
+  const [livePowerTick, setLivePowerTick] = useState(1480);
+  const [liveVoltageTick, setLiveVoltageTick] = useState(231.2);
+
+  // Subtle real-time electrical fluctuations on landing page
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setLivePowerTick(Math.floor(1420 + Math.random() * 140));
+      setLiveVoltageTick(+(230 + Math.random() * 2.8).toFixed(1));
+    }, 2000);
+    return () => clearInterval(timer);
+  }, []);
+
   const scrollToSection = (id) => {
     const el = document.getElementById(id);
     if (el) {
@@ -52,12 +66,12 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
 
         <div className="landing-nav-action">
           {isLoggedIn ? (
-            <button onClick={onGoToDashboard} className="btn btn-primary pulse-btn">
-              <span>{user?.role === 'admin' ? 'Admin Hub' : 'My Meter Dashboard'}</span>
+            <button onClick={onGoToDashboard} className="btn btn-primary">
+              <span>{user?.role === 'admin' ? 'Admin Hub' : 'Live Dashboard'}</span>
               <ArrowRight size={16} />
             </button>
           ) : (
-            <button onClick={onGoToLogin} className="btn btn-primary pulse-btn">
+            <button onClick={onGoToLogin} className="btn btn-primary">
               <span>Sign In to Portal</span>
               <ArrowRight size={16} />
             </button>
@@ -67,6 +81,8 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
 
       {/* Hero Section */}
       <section className="landing-hero">
+        <div className="hero-glow-wave"></div>
+
         <div className="hero-pill-badge">
           <span className="beacon-live"></span>
           <span>ESP32 + PZEM-004T CLOUD INTELLIGENCE PLATFORM</span>
@@ -82,6 +98,31 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
           High-frequency IoT telemetry streaming from PZEM-004T power meters to cloud PostgreSQL.
           Automated quota runway tracking, acoustic overload defense, and institutional fleet governance in a unified fullstack portal.
         </p>
+
+        {/* Live Grid Stream Ticker */}
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '16px',
+          background: '#ffffff',
+          border: '1px solid #cbd5e1',
+          padding: '8px 20px',
+          borderRadius: '30px',
+          fontSize: '0.8rem',
+          fontWeight: 700,
+          color: 'var(--text-secondary)',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+          marginBottom: '28px',
+          flexWrap: 'wrap',
+          justifyContent: 'center'
+        }}>
+          <span style={{ color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span className="dot"></span> LIVE GRID FEED
+          </span>
+          <span>⚡ Voltage: <strong style={{ color: 'var(--text-primary)' }}>{liveVoltageTick} V</strong></span>
+          <span>⚡ Active Draw: <strong style={{ color: 'var(--cyan)' }}>{livePowerTick} W</strong></span>
+          <span>⚡ Grid Frequency: <strong style={{ color: 'var(--purple)' }}>50.02 Hz</strong></span>
+        </div>
 
         <div className="hero-actions">
           {isLoggedIn ? (
@@ -117,8 +158,8 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
           </div>
           <div className="metric-divider"></div>
           <div className="metric-cell">
-            <span className="metric-num">24 / 7</span>
-            <span className="metric-tag">Cloud Telemetry Uptime</span>
+            <span className="metric-num">Hourly & Live</span>
+            <span className="metric-tag">Optimized Sync Cycles</span>
           </div>
           <div className="metric-divider"></div>
           <div className="metric-cell">
@@ -140,7 +181,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
 
         <div className="features-grid">
           <div className="feature-card glass">
-            <div className="feature-icon" style={{ background: 'rgba(0, 240, 255, 0.15)', color: 'var(--cyan)' }}>
+            <div className="feature-icon" style={{ background: '#e0f2fe', color: 'var(--cyan)' }}>
               <Radio size={26} />
             </div>
             <h3>PZEM-004T True RMS Measurement</h3>
@@ -149,28 +190,28 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               Total Energy (kWh), and Power Factor with galvanic optical isolation.
             </p>
             <div className="feature-points">
-              <span><CheckCircle2 size={14} className="text-cyan" /> 1.0% Factory Calibration Accuracy</span>
-              <span><CheckCircle2 size={14} className="text-cyan" /> Hardware Optocoupler Surge Protection</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--cyan)' }} /> 1.0% Factory Calibration Accuracy</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--cyan)' }} /> Hardware Optocoupler Surge Protection</span>
             </div>
           </div>
 
           <div className="feature-card glass">
-            <div className="feature-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--emerald)' }}>
+            <div className="feature-icon" style={{ background: '#ecfdf5', color: 'var(--emerald)' }}>
               <Activity size={26} />
             </div>
             <h3>Dynamic Quota & Tariff Runway</h3>
             <p>
-              Continuous algorithmic forecasting of prepaid electricity balance. Predicts hours remaining
+              Continuous algorithmic forecasting of electricity balance. Predicts hours remaining
               based on active load wattage, tariff rates (₹/kWh), and quota consumption rate.
             </p>
             <div className="feature-points">
-              <span><CheckCircle2 size={14} className="text-emerald" /> Real-time Quota Runway Countdown</span>
-              <span><CheckCircle2 size={14} className="text-emerald" /> Dynamic Tariff Reconfiguration</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--emerald)' }} /> Real-time Quota Runway Countdown</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--emerald)' }} /> Per-Meter Tariff Reconfiguration</span>
             </div>
           </div>
 
           <div className="feature-card glass">
-            <div className="feature-icon" style={{ background: 'rgba(239, 68, 68, 0.15)', color: 'var(--red)' }}>
+            <div className="feature-icon" style={{ background: '#fef2f2', color: 'var(--red)' }}>
               <AlertTriangle size={26} />
             </div>
             <h3>Acoustic & Visual Overload Guard</h3>
@@ -179,23 +220,23 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               crosses critical load or quota depletion thresholds.
             </p>
             <div className="feature-points">
-              <span><CheckCircle2 size={14} className="text-red" /> Audio Frequency Alarms & Visual Beacons</span>
-              <span><CheckCircle2 size={14} className="text-red" /> Relay State Telemetry Sync</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--red)' }} /> Audio Frequency Alarms & Beacons</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--red)' }} /> Instant Overdue & Paid Tracking</span>
             </div>
           </div>
 
           <div className="feature-card glass">
-            <div className="feature-icon" style={{ background: 'rgba(168, 85, 247, 0.15)', color: 'var(--purple)' }}>
+            <div className="feature-icon" style={{ background: '#f3e8ff', color: 'var(--purple)' }}>
               <Shield size={26} />
             </div>
             <h3>Administrative Fleet & User Governance</h3>
             <p>
-              Super-admin panel providing centralized database access. Provision ESP32 meters, manage consumer and student
-              credentials, update passwords, and inspect live database telemetry records.
+              Super-admin panel providing centralized database access. Provision meters, inspect individual meter readings,
+              update overdue dues, record paid amounts, set new tariff rates, and monitor online/offline transitions.
             </p>
             <div className="feature-points">
-              <span><CheckCircle2 size={14} className="text-purple" /> Admin-only User & Password Authority</span>
-              <span><CheckCircle2 size={14} className="text-purple" /> Live PostgreSQL Database Log Inspector</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--purple)' }} /> Admin-only User & Password Authority</span>
+              <span><CheckCircle2 size={15} style={{ color: 'var(--purple)' }} /> Live PostgreSQL Database Log Inspector</span>
             </div>
           </div>
         </div>
@@ -207,7 +248,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
           <span className="section-pill">SYSTEM ARCHITECTURE</span>
           <h2 className="section-title">End-to-End IoT Data Flow</h2>
           <p className="section-subtitle">
-            From physical AC line sensors to reactive cloud charts and administrative controls.
+            From physical AC line sensors to reactive cloud charts, hourly sync batches, and administrative controls.
           </p>
         </div>
 
@@ -222,7 +263,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
           </div>
 
           <div className="pipeline-arrow">
-            <ArrowRight size={20} />
+            <ArrowRight size={22} />
           </div>
 
           <div className="pipeline-step">
@@ -231,11 +272,11 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               <Radio size={24} style={{ color: 'var(--blue)' }} />
             </div>
             <h4>HTTPS Telemetry Ingestion</h4>
-            <p>Encrypted REST POST requests authenticated via unique device API keys sent every few seconds to Node.js backend.</p>
+            <p>Encrypted REST POST requests authenticated via unique device API keys sent hourly or periodically to Node.js backend.</p>
           </div>
 
           <div className="pipeline-arrow">
-            <ArrowRight size={20} />
+            <ArrowRight size={22} />
           </div>
 
           <div className="pipeline-step">
@@ -244,11 +285,11 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               <Database size={24} style={{ color: 'var(--purple)' }} />
             </div>
             <h4>PostgreSQL Cloud DB</h4>
-            <p>Persistent storage for users, meters, and timestamped telemetry logs. Foreign key relationships and indexed history.</p>
+            <p>Persistent storage for users, meters, billing audits, status logs, and timestamped telemetry records.</p>
           </div>
 
           <div className="pipeline-arrow">
-            <ArrowRight size={20} />
+            <ArrowRight size={22} />
           </div>
 
           <div className="pipeline-step">
@@ -257,7 +298,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
               <BarChart3 size={24} style={{ color: 'var(--emerald)' }} />
             </div>
             <h4>Fullstack Portal</h4>
-            <p>Single-origin React frontend delivering live SVG speedometers, interactive 30-day charts, and CSV auditing.</p>
+            <p>Light-themed React frontend delivering live SVG speedometers, interactive 30-day charts, and CSV auditing.</p>
           </div>
         </div>
       </section>
@@ -272,21 +313,21 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
         <div className="hardware-grid">
           <div className="hw-card glass">
             <div className="hw-title-row">
-              <Cpu size={20} style={{ color: 'var(--cyan)' }} />
+              <Cpu size={22} style={{ color: 'var(--cyan)' }} />
               <h4>ESP32-WROOM-32 Microcontroller</h4>
             </div>
             <ul className="hw-specs-list">
               <li><strong>Core:</strong> Dual-Core Xtensa 32-bit LX6 up to 240 MHz</li>
               <li><strong>Connectivity:</strong> 802.11 b/g/n 2.4GHz Wi-Fi + BLE</li>
               <li><strong>Interface:</strong> Hardware UART2 (GPIO 16 RX, GPIO 17 TX)</li>
-              <li><strong>Watchdog:</strong> Autonomous reconnect & non-blocking polling</li>
+              <li><strong>Transmission Cycle:</strong> Hourly consolidated sync (or continuous polling)</li>
               <li><strong>Relay Control:</strong> GPIO 26 digital driver for load switching</li>
             </ul>
           </div>
 
           <div className="hw-card glass">
             <div className="hw-title-row">
-              <Zap size={20} style={{ color: 'var(--amber)' }} />
+              <Zap size={22} style={{ color: 'var(--amber)' }} />
               <h4>PZEM-004T v3.0 Power Transducer</h4>
             </div>
             <ul className="hw-specs-list">
@@ -301,9 +342,9 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
       </section>
 
       {/* Institutional Security Notice */}
-      <section className="security-notice-card glass">
+      <section className="security-notice-card">
         <div className="notice-icon">
-          <Lock size={32} />
+          <Lock size={30} />
         </div>
         <div className="notice-content">
           <h3>Protected Energy Infrastructure</h3>
@@ -345,7 +386,7 @@ export default function LandingPage({ onGoToLogin, isLoggedIn, user, onGoToDashb
             <span className="tech-badge">Node.js Express</span>
             <span className="tech-badge">PostgreSQL</span>
             <span className="tech-badge">React 19</span>
-            <span className="tech-badge">Single-Origin Render</span>
+            <span className="tech-badge">Light Theme</span>
           </div>
         </div>
 
