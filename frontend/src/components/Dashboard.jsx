@@ -195,34 +195,32 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         return;
       }
 
-      // Create Razorpay order
-      const orderRes = await fetchApi('/api/payments/create-order', {
-        method: 'POST',
-        body: JSON.stringify({ meterId: selectedMeterId, amount: amt })
-      });
-      const orderData = await orderRes.json();
-      if (!orderRes.ok) {
-        showToast(orderData.error || 'Failed to initiate payment order');
-        setRechargeLoading(false);
-        return;
-      }
+      // Fetch public Razorpay Key from backend (or fallback to configured key)
+      let keyId = 'rzp_test_TKTk2IuoVuHf8v';
+      try {
+        const cfgRes = await fetchApi('/api/payments/config');
+        if (cfgRes.ok) {
+          const cfg = await cfgRes.json();
+          if (cfg.keyId) keyId = cfg.keyId;
+        }
+      } catch (e) {}
 
+      // Razorpay Standard Checkout Options (Direct Native Payment Window)
       const options = {
-        key: orderData.keyId || 'rzp_test_TKTk2IuoVuHf8v',
-        amount: orderData.order.amount,
+        key: keyId,
+        amount: Math.round(amt * 100), // in paise
         currency: 'INR',
         name: 'Voltronix Energy',
         description: `Prepaid Recharge for ${deviceInfo?.name || selectedMeterId}`,
-        order_id: orderData.order.id,
         handler: async function (response) {
           try {
-            showToast('Verifying payment and updating balance...');
+            showToast('Payment successful! Crediting meter balance...');
             const verifyRes = await fetchApi('/api/payments/verify', {
               method: 'POST',
               body: JSON.stringify({
-                razorpay_order_id: response.razorpay_order_id,
                 razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
+                razorpay_order_id: response.razorpay_order_id || null,
+                razorpay_signature: response.razorpay_signature || null,
                 meterId: selectedMeterId,
                 amount: amt
               })
@@ -252,6 +250,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
             }
           } catch (err) {
             showToast('Error finalizing recharge');
+          } finally {
+            setRechargeLoading(false);
           }
         },
         prefill: {
@@ -265,18 +265,23 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         },
         theme: {
           color: '#0284c7'
+        },
+        modal: {
+          ondismiss: function () {
+            setRechargeLoading(false);
+          }
         }
       };
 
       const rzp = new window.Razorpay(options);
       rzp.on('payment.failed', function (resp) {
-        showToast('Payment Failed: ' + (resp.error.description || 'Transaction cancelled'));
+        setRechargeLoading(false);
+        showToast('Payment Cancelled / Incomplete: ' + (resp.error?.description || 'Transaction not completed'));
       });
       rzp.open();
     } catch (err) {
       console.error('Payment checkout error:', err);
       showToast('Failed to start payment gateway');
-    } finally {
       setRechargeLoading(false);
     }
   };
