@@ -43,9 +43,25 @@ const char* DEVICE_API_KEY = "meter_secret_key_123";
 // CORRECTION NUMBER (Calibration Multiplier for PZEM-004T / CT sensor)
 float CORRECTION_NUM = 1.000;
 
-// Live Cloud Sync Interval (Syncs telemetry & pulls website updates every 5 seconds)
-const unsigned long CLOUD_SYNC_INTERVAL = 5000UL; // 5 seconds for rapid live sync with website
+// Live Cloud Sync Interval (Syncs telemetry & pulls website updates every 3 seconds)
+const unsigned long CLOUD_SYNC_INTERVAL = 3000UL; // 3 seconds for rapid live sync with website
 unsigned long lastCloudSync = 0;
+
+// Helper to extract floating point value from JSON without relying on brittle string offsets
+float extractJsonFloat(const String& json, const String& key) {
+  String searchKey = "\"" + key + "\":";
+  int idx = json.indexOf(searchKey);
+  if (idx == -1) {
+    searchKey = "\"" + key + "\" :";
+    idx = json.indexOf(searchKey);
+  }
+  if (idx == -1) return -999999.0;
+  int start = json.indexOf(':', idx) + 1;
+  while (start < (int)json.length() && (json[start] == ' ' || json[start] == '\t')) {
+    start++;
+  }
+  return json.substring(start).toFloat();
+}
 
 // ============================================================
 // PZEM-004T v3.0 HARDWARE SERIAL (Serial2)
@@ -75,6 +91,12 @@ float overdueAmount  = 0.0;     // Overdue debt if balance < 0 (₹)
 float unitsAvailable = 0.0;     // kWh units purchasable from balance
 float lockedBilledCost   = 0.0; // Billed usage locked at previous tariff (₹)
 float lockedBilledEnergy = 0.0; // Energy reading when tariff was locked (kWh)
+
+// Authoritative Cloud Baseline Balance variables
+float cloudAccountBalance   = 1000.0;
+float cloudOverdueAmount    = 0.0;
+float energyAtLastCloudSync = 0.0;
+bool  hasCloudSync          = false;
 
 // Live Readings from PZEM
 float voltage     = 0.0;
@@ -222,18 +244,33 @@ void calculateValues() {
   usedEnergy = energy - initialEnergy;
   if (usedEnergy < 0) usedEnergy = 0;
 
-  // Tariff rule: locked cost for past units, new tariff for remaining/future units
-  float incrementalEnergy = usedEnergy - lockedBilledEnergy;
-  if (incrementalEnergy < 0) incrementalEnergy = 0;
-  totalCost = lockedBilledCost + (incrementalEnergy * unitPrice);
+  if (hasCloudSync) {
+    // Dynamic live tracking: deduct exact consumption drawn since the last cloud sync
+    float deltaEnergy = energy - energyAtLastCloudSync;
+    if (deltaEnergy < 0) deltaEnergy = 0;
+    float deltaCost = deltaEnergy * unitPrice;
 
-  float rawBalance = rechargeAmount - totalCost;
-  if (rawBalance >= 0) {
-    accountBalance = rawBalance;
-    overdueAmount = 0.0;
+    if (cloudAccountBalance >= deltaCost) {
+      accountBalance = cloudAccountBalance - deltaCost;
+      overdueAmount = cloudOverdueAmount;
+    } else {
+      accountBalance = 0.0;
+      overdueAmount = cloudOverdueAmount + (deltaCost - cloudAccountBalance);
+    }
   } else {
-    accountBalance = 0.0;
-    overdueAmount = fabs(rawBalance);
+    // Standby offline mode before first cloud sync
+    float incrementalEnergy = usedEnergy - lockedBilledEnergy;
+    if (incrementalEnergy < 0) incrementalEnergy = 0;
+    totalCost = lockedBilledCost + (incrementalEnergy * unitPrice);
+
+    float rawBalance = rechargeAmount - totalCost;
+    if (rawBalance >= 0) {
+      accountBalance = rawBalance;
+      overdueAmount = 0.0;
+    } else {
+      accountBalance = 0.0;
+      overdueAmount = fabs(rawBalance);
+    }
   }
 
   unitsAvailable = unitPrice > 0 ? (accountBalance / unitPrice) : 0;
@@ -389,65 +426,60 @@ void doCloudSync() {
         calculateValues();
       }
 
-      // Sync recharge amount set by Admin on website or Razorpay
-      int rechargeIdx = response.indexOf("\"rechargeAmount\":");
-      if (rechargeIdx != -1) {
-        float cloudRecharge = response.substring(rechargeIdx + 17).toFloat();
-        if (cloudRecharge >= 0 && cloudRecharge != rechargeAmount) {
-          rechargeAmount = cloudRecharge;
-          prefs.putFloat("recharge", rechargeAmount);
-          calculateValues();
-          drawCurrentScreen(); // Trigger instant redraw on TFT screen
-          Serial.printf("[Cloud] Real-Time Recharge Balance Updated: Rs %.2f (Available: Rs %.2f)\n", rechargeAmount, accountBalance);
-        }
+      // 1. Extract cloud balance and tariff parameters with robust JSON parser
+      float cloudRecharge = extractJsonFloat(response, "rechargeAmount");
+      float cloudBal      = extractJsonFloat(response, "accountBalance");
+      float cloudDue      = extractJsonFloat(response, "overdueAmount");
+      float cloudPrice    = extractJsonFloat(response, "unitPrice");
+      float cloudBilled   = extractJsonFloat(response, "totalBilled");
+
+      bool balanceOrPriceChanged = false;
+
+      // Sync recharge amount pool
+      if (cloudRecharge >= 0 && fabs(cloudRecharge - rechargeAmount) > 0.01) {
+        rechargeAmount = cloudRecharge;
+        prefs.putFloat("recharge", rechargeAmount);
+        balanceOrPriceChanged = true;
       }
 
       // Sync official tariff price set by Admin on website
-      int priceIdx = response.indexOf("\"unitPrice\":");
-      if (priceIdx != -1) {
-        float cloudPrice = response.substring(priceIdx + 12).toFloat();
-        if (cloudPrice > 0 && cloudPrice != unitPrice) {
-          unitPrice = cloudPrice;
-          prefs.putFloat("price", unitPrice);
-          calculateValues();
-          drawCurrentScreen();
-          Serial.printf("[Cloud] Admin updated Tariff Unit Price: Rs %.2f/kWh\n", unitPrice);
-        }
+      if (cloudPrice > 0 && fabs(cloudPrice - unitPrice) > 0.01) {
+        unitPrice = cloudPrice;
+        prefs.putFloat("price", unitPrice);
+        balanceOrPriceChanged = true;
       }
 
-      // Sync totalBilled (locked billed usage) from Cloud
-      int billedIdx = response.indexOf("\"totalBilled\":");
-      if (billedIdx != -1) {
-        float cloudBilled = response.substring(billedIdx + 14).toFloat();
-        if (cloudBilled >= 0) {
-          lockedBilledCost = cloudBilled;
-          lockedBilledEnergy = usedEnergy;
-          prefs.putFloat("lockCost", lockedBilledCost);
-          prefs.putFloat("lockEnergy", lockedBilledEnergy);
-          calculateValues();
-          drawCurrentScreen();
-        }
+      // Sync totalBilled from Cloud
+      if (cloudBilled >= 0) {
+        lockedBilledCost = cloudBilled;
+        lockedBilledEnergy = usedEnergy;
+        totalCost = cloudBilled;
+        prefs.putFloat("lockCost", lockedBilledCost);
+        prefs.putFloat("lockEnergy", lockedBilledEnergy);
       }
 
-      // Sync account balance from Cloud
-      int balIdx = response.indexOf("\"accountBalance\":");
-      if (balIdx != -1) {
-        float cloudBal = response.substring(balIdx + 17).toFloat();
-        if (cloudBal >= 0 && cloudBal != accountBalance) {
-          accountBalance = cloudBal;
-          drawCurrentScreen();
-        }
+      // Sync authoritative account balance
+      if (cloudBal >= 0) {
+        cloudAccountBalance = cloudBal;
+        accountBalance = cloudBal;
+        energyAtLastCloudSync = energy;
+        hasCloudSync = true;
+        prefs.putFloat("bal", accountBalance);
+        balanceOrPriceChanged = true;
       }
 
-      // Sync overdue amount from Cloud
-      int dueIdx = response.indexOf("\"overdueAmount\":");
-      if (dueIdx != -1) {
-        float cloudDue = response.substring(dueIdx + 16).toFloat();
-        if (cloudDue >= 0 && cloudDue != overdueAmount) {
-          overdueAmount = cloudDue;
-          drawCurrentScreen();
-        }
+      // Sync overdue debt
+      if (cloudDue >= 0) {
+        cloudOverdueAmount = cloudDue;
+        overdueAmount = cloudDue;
+        prefs.putFloat("due", overdueAmount);
       }
+
+      calculateValues();
+      drawCurrentScreen(); // Trigger immediate real-time redraw on TFT screen
+
+      Serial.printf("[Cloud] Live Sync OK: Avail Bal=Rs %.2f, Recharged=Rs %.2f, Due=Rs %.2f, Rate=Rs %.2f/kWh\n",
+                    accountBalance, rechargeAmount, overdueAmount, unitPrice);
     } else {
       Serial.printf("[Cloud] POST failed, HTTP status: %d\n", httpCode);
     }
@@ -470,28 +502,28 @@ void checkHourlyLoadSync() {
 // TFT DISPLAY DRAW ROUTINES
 // ============================================================
 void drawHeader(const char* title, uint16_t color) {
-  tft.fillRect(0, 0, SCREEN_W, 38, NAVY);
+  tft.fillRect(0, 0, SCREEN_W, 36, NAVY);
   tft.setTextColor(color, NAVY);
   tft.setTextSize(2);
-  tft.setCursor(10, 10);
+  tft.setCursor(8, 9);
   tft.print(title);
 
-  // Display Local IP on Header so user can always see it
-  if (WiFi.status() == WL_CONNECTED) {
-    tft.setTextColor(CYAN, NAVY);
-    tft.setTextSize(1);
-    tft.setCursor(160, 14);
-    tft.print(WiFi.localIP().toString());
+  // Live Balance Indicator in Header across all 5 screens
+  tft.setTextSize(1);
+  if (overdueAmount > 0) {
+    tft.setTextColor(RED, NAVY);
+    tft.setCursor(135, 12);
+    tft.printf("DUE: Rs%.2f", overdueAmount);
   } else {
-    tft.setTextColor(ORANGE, NAVY);
-    tft.setTextSize(1);
-    tft.setCursor(185, 14);
-    tft.print("OFFLINE");
+    tft.setTextColor(GREEN, NAVY);
+    tft.setCursor(135, 12);
+    tft.printf("Bal: Rs%.2f", accountBalance);
   }
 
+  // Screen indicator
   tft.setTextColor(LIGHTGRAY, NAVY);
   tft.setTextSize(1);
-  tft.setCursor(285, 14);
+  tft.setCursor(285, 12);
   tft.printf("%d/5", currentScreen + 1);
 }
 
@@ -520,28 +552,47 @@ void drawScreenLive() {
   tft.fillScreen(BLACK);
   drawHeader("LIVE LOAD", CYAN);
 
-  tft.fillRoundRect(10, 47, 300, 30, 8, loadON ? DARKGREEN : DARKGRAY);
+  // Top Load Status & Balance Banner (Prominently shows current account balance in real-time)
+  tft.fillRoundRect(8, 42, 304, 38, 8, loadON ? DARKGREEN : DARKGRAY);
   tft.setTextSize(2);
   tft.setTextColor(loadON ? GREEN : LIGHTGRAY, loadON ? DARKGREEN : DARKGRAY);
-  tft.setCursor(22, 54);
-  tft.print(loadON ? "●  LOAD ON" : "●  STANDBY");
+  tft.setCursor(16, 52);
+  tft.print(loadON ? "● ON" : "● OFF");
 
-  drawCard(10, 87, 145, 58, "VOLTAGE", loadON ? String(voltage, 1) : "0.0", "V", NAVY, YELLOW);
-  drawCard(165, 87, 145, 58, "CURRENT", loadON ? String(current, 2) : "0.00", "A", NAVY, CYAN);
+  tft.setTextSize(1);
+  tft.setTextColor(WHITE, loadON ? DARKGREEN : DARKGRAY);
+  tft.setCursor(110, 47);
+  tft.print(overdueAmount > 0 ? "OVERDUE DUE" : "AVAILABLE BALANCE");
 
-  tft.fillRoundRect(10, 155, 300, 70, 10, DARKGRAY);
+  tft.setTextSize(2);
+  tft.setTextColor(overdueAmount > 0 ? RED : YELLOW, loadON ? DARKGREEN : DARKGRAY);
+  tft.setCursor(110, 60);
+  tft.printf("Rs %.2f", overdueAmount > 0 ? overdueAmount : accountBalance);
+
+  // Middle Cards: Voltage & Current
+  drawCard(8, 86, 148, 54, "VOLTAGE", loadON ? String(voltage, 1) : "0.0", "V", NAVY, YELLOW);
+  drawCard(164, 86, 148, 54, "CURRENT", loadON ? String(current, 2) : "0.00", "A", NAVY, CYAN);
+
+  // Bottom Card: Active Power Demand & Tariff
+  tft.fillRoundRect(8, 146, 304, 86, 8, DARKGRAY);
   tft.setTextColor(LIGHTGRAY, DARKGRAY);
   tft.setTextSize(1);
-  tft.setCursor(22, 164);
-  tft.print("POWER CONSUMPTION");
+  tft.setCursor(18, 154);
+  tft.printf("ACTIVE POWER DEMAND   [Rate: Rs %.2f/kWh]", unitPrice);
 
   tft.setTextColor(loadON ? ORANGE : GRAY, DARKGRAY);
   tft.setTextSize(4);
-  tft.setCursor(22, 182);
+  tft.setCursor(18, 172);
   if (loadON) tft.print(power, 1);
   else tft.print("0.0");
   tft.setTextSize(2);
   tft.print(" W");
+
+  // Bottom Subtext: Total Units & Billed
+  tft.setTextColor(CYAN, DARKGRAY);
+  tft.setTextSize(1);
+  tft.setCursor(18, 214);
+  tft.printf("Units: %.3f kWh | Billed: Rs %.2f", usedEnergy, totalCost);
 }
 
 void drawScreenEnergy() {

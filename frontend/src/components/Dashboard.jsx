@@ -203,6 +203,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         if (rchRes.ok && rchJson.transactions) {
           setRechargeHistory(rchJson.transactions);
         }
+        // Immediately notify ESP32 local IP to refresh hardware display
+        triggerLocalEspSync(deviceInfo?.local_ip || deviceInfo?.localIp);
       } else {
         showToast(verifyData.error || 'Recharge failed');
       }
@@ -211,6 +213,16 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
     } finally {
       setRechargeLoading(false);
     }
+  };
+
+  const triggerLocalEspSync = async (ip) => {
+    if (!ip) return;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1800);
+      await fetch(`http://${ip}/sync-now`, { signal: controller.signal, mode: 'no-cors' });
+      clearTimeout(timeoutId);
+    } catch (e) {}
   };
 
   // Handle direct Razorpay online bank/UPI recharge
@@ -280,6 +292,8 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
               if (rchRes.ok && rchJson.transactions) {
                 setRechargeHistory(rchJson.transactions);
               }
+              // Immediately signal ESP32 hardware display to refresh
+              triggerLocalEspSync(deviceInfo?.local_ip || deviceInfo?.localIp);
             } else {
               showToast(verifyData.error || 'Payment verification failed');
             }

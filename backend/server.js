@@ -602,8 +602,8 @@ app.put('/api/meters/:id/settings', verifyToken, requireAdmin, async (req, res) 
 // Admin Top-Up: Directly SUM an amount to a user's balance
 app.post('/api/meters/:id/topup', verifyToken, requireAdmin, async (req, res) => {
   const deviceId = req.params.id;
-  const { amount, notes } = req.body;
-  const topupVal = parseFloat(amount);
+  const topupVal = parseFloat(req.body.amount || req.body.topupAmount);
+  const notes = req.body.notes;
   if (isNaN(topupVal) || topupVal <= 0) {
     return res.status(400).json({ error: 'Valid top-up amount required' });
   }
@@ -643,6 +643,7 @@ app.post('/api/meters/:id/topup', verifyToken, requireAdmin, async (req, res) =>
     res.json({
       success: true,
       device: updateRes.rows[0],
+      meter: updateRes.rows[0],
       message: `Successfully credited ₹${topupVal.toFixed(2)} to meter ${deviceId}. New pool: ₹${newRecharge.toFixed(2)}`
     });
   } catch (err) {

@@ -170,6 +170,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       const res = await fetchApi(`/api/meters/${inspectedMeterId}/topup`, {
         method: 'POST',
         body: JSON.stringify({
+          amount: parseFloat(topupAmount),
           topupAmount: parseFloat(topupAmount),
           notes: topupNotes || 'Admin credited top-up (Summed to user balance)'
         })
@@ -178,7 +179,8 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to apply balance top-up');
 
-      showToast(`Successfully credited ₹${parseFloat(topupAmount).toFixed(2)}! New balance: ₹${parseFloat(data.meter?.recharge_amount || 0).toFixed(2)}`);
+      const updatedPool = data.meter?.recharge_amount || data.device?.recharge_amount || 0;
+      showToast(`Successfully credited ₹${parseFloat(topupAmount).toFixed(2)}! New balance: ₹${parseFloat(updatedPool).toFixed(2)}`);
       setTopupAmount('500.00');
       setTopupNotes('');
 
