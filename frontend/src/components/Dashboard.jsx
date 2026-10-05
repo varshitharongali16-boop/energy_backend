@@ -209,7 +209,7 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
 
       // Step 2: Open official Razorpay Checkout Window
       const options = {
-        key: orderData.keyId || 'rzp_test_TKTk2IuoVuHf8v',
+        key: orderData.keyId || 'rzp_test_Tk85zJYCnAGHL9',
         amount: orderData.order.amount,
         currency: orderData.order.currency || 'INR',
         name: 'Voltronix Energy',

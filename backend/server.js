@@ -15,8 +15,8 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_energy_jwt_key_2026';
 
 // Razorpay Payment Gateway Configuration
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_TKTk2IuoVuHf8v';
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'Ds3zr8o025nQPWke7yO41RPa';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_Tk85zJYCnAGHL9';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'PSuhYjn5BtBH0orzgF2PD3wB';
 
 const razorpay = new Razorpay({
   key_id: RAZORPAY_KEY_ID,

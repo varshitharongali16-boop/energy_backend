@@ -80,8 +80,8 @@ graph TD
 
 To empower consumers to recharge their prepaid energy balance without dependency on administrative personnel, the system incorporates **Razorpay Test Payment Gateway** credentials:
 
-- **Razorpay Key ID:** `rzp_test_TKTk2IuoVuHf8v`
-- **Razorpay Key Secret:** `Ds3zr8o025nQPWke7yO41RPa`
+- **Razorpay Key ID:** `rzp_test_Tk85zJYCnAGHL9`
+- **Razorpay Key Secret:** `PSuhYjn5BtBH0orzgF2PD3wB`
 
 ```mermaid
 sequenceDiagram
@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS recharge_transactions (
 
 ## 8. Summary of Accomplishments & Deliverables
 
-1. **Integrated Razorpay Payment Gateway:** Incorporated credentials `rzp_test_TKTk2IuoVuHf8v` and `Ds3zr8o025nQPWke7yO41RPa`, enabling self-service direct bank account, UPI, and card recharges.
+1. **Integrated Razorpay Payment Gateway:** Incorporated credentials `rzp_test_Tk85zJYCnAGHL9` and `PSuhYjn5BtBH0orzgF2PD3wB`, enabling self-service direct bank account, UPI, and card recharges.
 2. **Implemented Additive Balance Top-Up:** Both user recharges and admin top-ups sum cumulatively onto current user balances, automatically liquidating overdue dues without data loss.
 3. **Configured Real-Time Display Synchronization:** Frontend polls live status every 2 seconds, while ESP32 executes rapid 3-second cloud syncs and sub-second `/sync-now` local push notifications. The Available Balance and Tariff Rate are prominently integrated directly onto Screen 0 (LIVE LOAD) and within the universal top header across all display screens.
 4. **Documented Seed Credentials:** Detailed access authority for Administrator (`admin` / `123`) and Consumer User (`praveen` / `123`).
