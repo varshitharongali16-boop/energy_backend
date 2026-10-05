@@ -722,7 +722,8 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
 
 // Verify and Credit Razorpay Payment (SUMS TO BALANCE)
 app.post('/api/payments/verify', verifyToken, async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, meterId, amount } = req.body;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount } = req.body;
+  const meterId = req.body.meterId || req.body.deviceId;
   const amt = parseFloat(amount);
 
   if (!meterId || isNaN(amt) || amt <= 0) {
