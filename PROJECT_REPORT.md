@@ -217,12 +217,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. Devices Table (Fleet Management & Prepaid Settings)
+-- 2. Devices Table (Fleet Management & Multi-Consumer Settings)
 CREATE TABLE IF NOT EXISTS devices (
     id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(100) NOT NULL DEFAULT 'Smart Power Meter',
     api_key VARCHAR(100) NOT NULL,
     assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_user_ids TEXT DEFAULT '[]', -- JSON array of multi-assigned user IDs
     unit_price NUMERIC(8,2) DEFAULT 8.50,
     allowed_units NUMERIC(10,3) DEFAULT 100.00,
     recharge_amount NUMERIC(10,2) DEFAULT 1000.00,
@@ -239,7 +240,15 @@ CREATE TABLE IF NOT EXISTS devices (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 3. Telemetry Table (Time-Series Power Metrics)
+-- 3. Device Users Junction Table (Multi-Person Meter Ownership)
+CREATE TABLE IF NOT EXISTS device_users (
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (device_id, user_id)
+);
+
+-- 4. Telemetry Table (Time-Series Power Metrics)
 CREATE TABLE IF NOT EXISTS telemetry (
     id BIGSERIAL PRIMARY KEY,
     device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -253,7 +262,7 @@ CREATE TABLE IF NOT EXISTS telemetry (
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. Recharge Transactions Table (Razorpay & Admin Ledger)
+-- 5. Recharge Transactions Table (Razorpay & Admin Ledger)
 CREATE TABLE IF NOT EXISTS recharge_transactions (
     id SERIAL PRIMARY KEY,
     device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -275,6 +284,7 @@ CREATE TABLE IF NOT EXISTS recharge_transactions (
 
 1. **Integrated Razorpay Payment Gateway:** Incorporated credentials `rzp_test_Tk85zJYCnAGHL9` and `PSuhYjn5BtBH0orzgF2PD3wB`, enabling self-service direct bank account, UPI, and card recharges.
 2. **Implemented Additive Balance Top-Up:** Both user recharges and admin top-ups sum cumulatively onto current user balances, automatically liquidating overdue dues without data loss.
-3. **Configured Real-Time Display Synchronization:** Frontend polls live status every 2 seconds, while ESP32 executes rapid 3-second cloud syncs and sub-second `/sync-now` local push notifications. The Available Balance and Tariff Rate are prominently integrated directly onto Screen 0 (LIVE LOAD) and within the universal top header across all display screens.
-4. **Documented Seed Credentials:** Detailed access authority for Administrator (`admin` / `123`) and Consumer User (`praveen` / `123`).
-5. **Captured Live System Artifacts:** Embedded actual high-resolution visual screenshots of both user and administrator dashboards.
+3. **Multi-Consumer Meter Assignment & Full Fleet Editing:** Added comprehensive "Edit" controls directly in the Active Fleet table, allowing administrators to modify all meter metadata (name, API key, tariff rate, quota, overdue, paid amounts, allowed units, active status) and assign the exact same smart meter across multiple consumers simultaneously.
+4. **Configured Real-Time Display Synchronization:** Frontend polls live status every 2 seconds, while ESP32 executes rapid 3-second cloud syncs and sub-second `/sync-now` local push notifications. The Available Balance and Tariff Rate are prominently integrated directly onto Screen 0 (LIVE LOAD) and within the universal top header across all display screens.
+5. **Documented Seed Credentials:** Detailed access authority for Administrator (`admin` / `123`) and Consumer User (`praveen` / `123`).
+6. **Captured Live System Artifacts:** Embedded actual high-resolution visual screenshots of both user and administrator dashboards.

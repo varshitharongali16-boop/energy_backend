@@ -27,7 +27,8 @@ import {
   AlertCircle,
   CreditCard,
   Wallet,
-  ArrowUpRight
+  ArrowUpRight,
+  Edit3
 } from 'lucide-react';
 
 export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, onLogout, showToast }) {
@@ -79,6 +80,20 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
   const [editEmail, setEditEmail] = useState('');
   const [editPassword, setEditPassword] = useState('');
   const [editRole, setEditRole] = useState('user');
+
+  // Edit Smart Meter Modal State (Full Data & Multi-Person Assignment)
+  const [editingMeter, setEditingMeter] = useState(null);
+  const [editMeterName, setEditMeterName] = useState('');
+  const [editMeterApiKey, setEditMeterApiKey] = useState('');
+  const [editMeterAssignedUserIds, setEditMeterAssignedUserIds] = useState([]);
+  const [editMeterPrice, setEditMeterPrice] = useState('8.50');
+  const [editMeterRecharge, setEditMeterRecharge] = useState('1000.00');
+  const [editMeterOverdue, setEditMeterOverdue] = useState('0.00');
+  const [editMeterPaid, setEditMeterPaid] = useState('0.00');
+  const [editMeterAllowedUnits, setEditMeterAllowedUnits] = useState('100.00');
+  const [editMeterIsActive, setEditMeterIsActive] = useState(true);
+  const [editMeterSaving, setEditMeterSaving] = useState(false);
+  const [userSearchTerm, setUserSearchTerm] = useState('');
 
   const loadData = async () => {
     try {
@@ -381,6 +396,90 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
     }
   };
 
+  // Open Edit Meter Modal (Prepopulate whole data & assigned consumers)
+  const openEditMeterModal = (meter) => {
+    setEditingMeter(meter);
+    setEditMeterName(meter.name || '');
+    setEditMeterApiKey(meter.api_key || '');
+
+    // Normalize assigned consumer IDs from various possible shapes
+    let initialIds = [];
+    if (Array.isArray(meter.assigned_user_ids)) {
+      initialIds = meter.assigned_user_ids.map(Number);
+    } else if (typeof meter.assigned_user_ids === 'string') {
+      try {
+        const parsed = JSON.parse(meter.assigned_user_ids);
+        if (Array.isArray(parsed)) initialIds = parsed.map(Number);
+      } catch {
+        initialIds = meter.assigned_user_ids.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+      }
+    } else if (Array.isArray(meter.assigned_users) && meter.assigned_users.length > 0) {
+      initialIds = meter.assigned_users.map(u => Number(u.id));
+    } else if (meter.assigned_user_id) {
+      initialIds = [parseInt(meter.assigned_user_id)];
+    }
+    setEditMeterAssignedUserIds(initialIds);
+
+    setEditMeterPrice(meter.unit_price !== undefined ? String(meter.unit_price) : '8.50');
+    setEditMeterRecharge(meter.recharge_amount !== undefined ? String(meter.recharge_amount) : '1000.00');
+    setEditMeterOverdue(meter.overdue_amount !== undefined ? String(meter.overdue_amount) : '0.00');
+    setEditMeterPaid(meter.paid_amount !== undefined ? String(meter.paid_amount) : '0.00');
+    setEditMeterAllowedUnits(meter.allowed_units !== undefined ? String(meter.allowed_units) : '100.00');
+    setEditMeterIsActive(meter.is_active !== undefined ? Boolean(meter.is_active) : true);
+    setUserSearchTerm('');
+  };
+
+  const toggleUserAssignment = (userId) => {
+    const uid = Number(userId);
+    setEditMeterAssignedUserIds((prev) =>
+      prev.includes(uid) ? prev.filter((id) => id !== uid) : [...prev, uid]
+    );
+  };
+
+  const selectAllConsumers = () => {
+    setEditMeterAssignedUserIds(users.map((u) => u.id));
+  };
+
+  const clearAllConsumers = () => {
+    setEditMeterAssignedUserIds([]);
+  };
+
+  const handleUpdateMeter = async (e) => {
+    e.preventDefault();
+    if (!editingMeter) return;
+    setEditMeterSaving(true);
+
+    try {
+      const payload = {
+        name: editMeterName.trim(),
+        apiKey: editMeterApiKey.trim(),
+        assignedUserIds: editMeterAssignedUserIds,
+        unitPrice: parseFloat(editMeterPrice) || 8.50,
+        rechargeAmount: parseFloat(editMeterRecharge) || 0.00,
+        overdueAmount: parseFloat(editMeterOverdue) || 0.00,
+        paidAmount: parseFloat(editMeterPaid) || 0.00,
+        allowedUnits: parseFloat(editMeterAllowedUnits) || 100.00,
+        isActive: editMeterIsActive
+      };
+
+      const res = await fetchApi(`/api/admin/devices/${editingMeter.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update meter data');
+
+      showToast(data.message || `Meter "${editingMeter.id}" updated successfully!`);
+      setEditingMeter(null);
+      await loadData();
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setEditMeterSaving(false);
+    }
+  };
+
   return (
     <div className="container">
       {/* Top Header */}
@@ -670,7 +769,58 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                             <strong>{d.id}</strong>
                           </td>
                           <td>{d.name}</td>
-                          <td>{d.assigned_username || <span style={{ color: '#94a3b8' }}>Unassigned</span>}</td>
+                          <td>
+                            {d.assigned_users && d.assigned_users.length > 0 ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxWidth: '240px' }}>
+                                {d.assigned_users.map((u) => (
+                                  <span
+                                    key={u.id}
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      background: 'rgba(99, 102, 241, 0.12)',
+                                      color: '#4f46e5',
+                                      border: '1px solid rgba(99, 102, 241, 0.25)'
+                                    }}
+                                    title={`${u.username} (${u.email}) - ${u.role}`}
+                                  >
+                                    <Users size={11} />
+                                    {u.username}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : d.assigned_username ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxWidth: '240px' }}>
+                                {d.assigned_username.split(',').map((name, idx) => (
+                                  <span
+                                    key={idx}
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      background: 'rgba(99, 102, 241, 0.12)',
+                                      color: '#4f46e5',
+                                      border: '1px solid rgba(99, 102, 241, 0.25)'
+                                    }}
+                                  >
+                                    <Users size={11} />
+                                    {name.trim()}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span style={{ color: '#94a3b8', fontStyle: 'italic', fontSize: '0.78rem' }}>Unassigned</span>
+                            )}
+                          </td>
                           <td>
                             <strong style={{ color: 'var(--emerald)' }}>₹{parseFloat(d.recharge_amount || 0).toFixed(2)}</strong>
                           </td>
@@ -700,11 +850,11 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                             </span>
                           </td>
                           <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                            <div style={{ display: 'inline-flex', gap: '8px' }}>
+                            <div style={{ display: 'inline-flex', gap: '6px' }}>
                               <button
                                 onClick={() => handleInspectMeter(d.id)}
                                 className="btn btn-outline"
-                                style={{ padding: '6px 10px', fontSize: '0.75rem', color: 'var(--cyan)' }}
+                                style={{ padding: '6px 9px', fontSize: '0.75rem', color: 'var(--cyan)' }}
                                 title="Inspect Meter & Manage Billing"
                               >
                                 <Eye size={13} />
@@ -712,9 +862,28 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                               </button>
 
                               <button
+                                onClick={() => openEditMeterModal(d)}
+                                className="btn btn-primary"
+                                style={{
+                                  padding: '6px 10px',
+                                  fontSize: '0.75rem',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
+                                  color: '#fff',
+                                  fontWeight: 700
+                                }}
+                                title="Edit Complete Meter Data & Assign Across People"
+                              >
+                                <Edit3 size={13} />
+                                <span>Edit</span>
+                              </button>
+
+                              <button
                                 onClick={() => handleDeleteDevice(d)}
                                 className="btn btn-danger"
-                                style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+                                style={{ padding: '6px 9px', fontSize: '0.75rem' }}
                                 title="Delete Meter"
                               >
                                 <Trash2 size={13} />
@@ -1048,6 +1217,32 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                     <span>Sync ESP32 ({meterDetails.device.local_ip || meterDetails.device.localIp})</span>
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentDev = devices.find((d) => d.id === inspectedMeterId) || meterDetails?.device;
+                    if (currentDev) {
+                      setInspectedMeterId(null);
+                      openEditMeterModal(currentDev);
+                    }
+                  }}
+                  className="btn btn-primary"
+                  style={{
+                    fontSize: '0.74rem',
+                    padding: '4px 10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
+                    color: '#fff',
+                    fontWeight: 700
+                  }}
+                  title="Edit Complete Meter Configuration & Consumer Assignments"
+                >
+                  <Edit3 size={13} />
+                  <span>Edit Meter</span>
+                </button>
 
                 <button
                   onClick={() => setInspectedMeterId(null)}
@@ -1600,6 +1795,7 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                   placeholder="Enter new password (optional)"
                   value={editPassword}
                   onChange={(e) => setEditPassword(e.target.value)}
+                  autoComplete="new-password"
                 />
               </div>
 
@@ -1623,6 +1819,313 @@ export default function AdminPortal({ onSwitchToDashboard, onSwitchToLanding, on
                 <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
                   <Save size={14} />
                   <span>Save Changes</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Smart Meter Modal (Whole Data & Multi-Person Assignment) */}
+      {editingMeter && (
+        <div className="modal-overlay" onClick={() => setEditingMeter(null)}>
+          <div className="modal-box large" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '680px', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{
+                  width: '38px',
+                  height: '38px',
+                  borderRadius: '10px',
+                  background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.15), rgba(6, 182, 212, 0.15))',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--cyan)'
+                }}>
+                  <Edit3 size={20} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 900, margin: 0 }}>Edit Smart Meter Configuration</h3>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                    Meter ID: <strong style={{ color: 'var(--cyan)' }}>{editingMeter.id}</strong> — update whole meter parameters & multi-person consumer access.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingMeter(null)}
+                style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateMeter}>
+              {/* Identity Row */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+                <div className="input-wrap">
+                  <label>Meter Name / Location</label>
+                  <input
+                    type="text"
+                    value={editMeterName}
+                    onChange={(e) => setEditMeterName(e.target.value)}
+                    placeholder="e.g. Living Room PZEM Meter"
+                    required
+                  />
+                </div>
+                <div className="input-wrap">
+                  <label>API Key / Device Secret</label>
+                  <input
+                    type="text"
+                    value={editMeterApiKey}
+                    onChange={(e) => setEditMeterApiKey(e.target.value)}
+                    placeholder="meter_secret_key_123"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Multi-Person Consumer Assignment Section */}
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.65)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '12px',
+                padding: '14px',
+                marginBottom: '16px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Users size={16} style={{ color: '#4f46e5' }} />
+                    <label style={{ margin: 0, fontWeight: 800, fontSize: '0.85rem' }}>
+                      Assign Same Meter Across Multiple People
+                    </label>
+                    <span style={{
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      background: '#e0e7ff',
+                      color: '#4338ca',
+                      padding: '2px 8px',
+                      borderRadius: '10px'
+                    }}>
+                      {editMeterAssignedUserIds.length} Selected
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={selectAllConsumers}
+                      className="btn btn-outline"
+                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearAllConsumers}
+                      className="btn btn-outline"
+                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                  Select all consumers who can view live readings, audit sessions, and recharge this meter directly:
+                </p>
+
+                {users.length > 5 && (
+                  <div style={{ marginBottom: '8px' }}>
+                    <input
+                      type="text"
+                      placeholder="Search users by name or email..."
+                      value={userSearchTerm}
+                      onChange={(e) => setUserSearchTerm(e.target.value)}
+                      style={{ padding: '6px 10px', fontSize: '0.78rem', width: '100%', borderRadius: '8px', border: '1px solid var(--border-color)' }}
+                    />
+                  </div>
+                )}
+
+                <div style={{
+                  maxHeight: '160px',
+                  overflowY: 'auto',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  background: '#fff'
+                }}>
+                  {users.length === 0 ? (
+                    <div style={{ padding: '16px', textAlign: 'center', color: '#94a3b8', fontSize: '0.78rem' }}>
+                      No users registered yet.
+                    </div>
+                  ) : (
+                    users
+                      .filter((u) => {
+                        if (!userSearchTerm) return true;
+                        const term = userSearchTerm.toLowerCase();
+                        return u.username.toLowerCase().includes(term) || u.email.toLowerCase().includes(term);
+                      })
+                      .map((u) => {
+                        const isAssigned = editMeterAssignedUserIds.includes(u.id);
+                        return (
+                          <div
+                            key={u.id}
+                            onClick={() => toggleUserAssignment(u.id)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 12px',
+                              borderBottom: '1px solid #f1f5f9',
+                              cursor: 'pointer',
+                              background: isAssigned ? '#ecfdf5' : 'transparent',
+                              transition: 'background 0.15s ease'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <input
+                                type="checkbox"
+                                checked={isAssigned}
+                                onChange={() => toggleUserAssignment(u.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ cursor: 'pointer', width: '15px', height: '15px' }}
+                              />
+                              <div>
+                                <strong style={{ fontSize: '0.82rem', color: isAssigned ? '#15803d' : '#1e293b' }}>
+                                  {u.username}
+                                </strong>
+                                <span style={{ fontSize: '0.74rem', color: '#64748b', marginLeft: '6px' }}>
+                                  ({u.email})
+                                </span>
+                              </div>
+                            </div>
+                            <span style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              padding: '2px 6px',
+                              borderRadius: '8px',
+                              background: u.role === 'admin' ? '#fef3c7' : '#e0f2fe',
+                              color: u.role === 'admin' ? '#b45309' : '#0369a1'
+                            }}>
+                              {u.role.toUpperCase()}
+                            </span>
+                          </div>
+                        );
+                      })
+                  )}
+                </div>
+              </div>
+
+              {/* Financial & Quota Settings */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+                <div className="input-wrap">
+                  <label>Tariff Rate (₹/kWh)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editMeterPrice}
+                    onChange={(e) => setEditMeterPrice(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="input-wrap">
+                  <label>Prepaid Quota / Recharge Pool (₹)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editMeterRecharge}
+                    onChange={(e) => setEditMeterRecharge(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                <div className="input-wrap">
+                  <label>Overdue Dues (₹)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editMeterOverdue}
+                    onChange={(e) => setEditMeterOverdue(e.target.value)}
+                  />
+                </div>
+                <div className="input-wrap">
+                  <label>Paid Amount (₹)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editMeterPaid}
+                    onChange={(e) => setEditMeterPaid(e.target.value)}
+                  />
+                </div>
+                <div className="input-wrap">
+                  <label>Allowed Units (kWh)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={editMeterAllowedUnits}
+                    onChange={(e) => setEditMeterAllowedUnits(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Status Switch */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                background: '#f8fafc',
+                borderRadius: '8px',
+                marginBottom: '20px',
+                border: '1px solid var(--border-color)'
+              }}>
+                <div>
+                  <strong style={{ fontSize: '0.84rem' }}>Device Operating Status</strong>
+                  <p style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', margin: 0 }}>
+                    Enable or disable this meter from authenticating and reporting data.
+                  </p>
+                </div>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={editMeterIsActive}
+                    onChange={(e) => setEditMeterIsActive(e.target.checked)}
+                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: editMeterIsActive ? 'var(--emerald)' : 'var(--red)' }}>
+                    {editMeterIsActive ? 'Active' : 'Disabled'}
+                  </span>
+                </label>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditingMeter(null)}
+                  className="btn btn-outline"
+                  style={{ flex: 1 }}
+                  disabled={editMeterSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{
+                    flex: 1,
+                    background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                  disabled={editMeterSaving}
+                >
+                  <Save size={16} />
+                  <span>{editMeterSaving ? 'Saving Changes...' : 'Save Meter Changes'}</span>
                 </button>
               </div>
             </form>

@@ -51,6 +51,25 @@ function requireAdmin(req, res, next) {
   }
 }
 
+// Helper to verify if a user has access to a device (supports multi-person assignment)
+function isUserAuthorizedForDevice(device, userId) {
+  if (!device || !userId) return false;
+  const uid = Number(userId);
+  if (Number(device.assigned_user_id) === uid) return true;
+  let ids = [];
+  if (Array.isArray(device.assigned_user_ids)) {
+    ids = device.assigned_user_ids;
+  } else if (typeof device.assigned_user_ids === 'string') {
+    try {
+      const parsed = JSON.parse(device.assigned_user_ids);
+      if (Array.isArray(parsed)) ids = parsed;
+    } catch {
+      ids = device.assigned_user_ids.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+    }
+  }
+  return ids.map(Number).includes(uid);
+}
+
 // Device Auth Middleware for ESP32
 async function verifyDevice(req, res, next) {
   const deviceId = req.headers['x-device-id'] || req.body.deviceId;
@@ -283,7 +302,7 @@ app.get('/api/meters', verifyToken, async (req, res) => {
     } else {
       queryText = `
         SELECT * FROM devices
-        WHERE assigned_user_id = $1
+        WHERE assigned_user_id = $1 OR assigned_user_ids LIKE '%' || $1 || '%'
         ORDER BY created_at ASC
       `;
       params = [req.user.id];
@@ -307,7 +326,7 @@ app.get('/api/meters/:id/live', verifyToken, async (req, res) => {
     if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
 
     const device = devQuery.rows[0];
-    if (req.user.role !== 'admin' && device.assigned_user_id !== req.user.id) {
+    if (req.user.role !== 'admin' && !isUserAuthorizedForDevice(device, req.user.id)) {
       return res.status(403).json({ error: 'Unauthorized access to this meter' });
     }
 
@@ -422,7 +441,7 @@ app.get('/api/meters/:id/sessions', verifyToken, async (req, res) => {
   try {
     const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
     if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
-    if (req.user.role !== 'admin' && devQuery.rows[0].assigned_user_id !== req.user.id) {
+    if (req.user.role !== 'admin' && !isUserAuthorizedForDevice(devQuery.rows[0], req.user.id)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -457,7 +476,7 @@ app.get('/api/meters/:id/monthly', verifyToken, async (req, res) => {
   try {
     const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
     if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
-    if (req.user.role !== 'admin' && devQuery.rows[0].assigned_user_id !== req.user.id) {
+    if (req.user.role !== 'admin' && !isUserAuthorizedForDevice(devQuery.rows[0], req.user.id)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -679,7 +698,7 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
     const dev = devQuery.rows[0];
 
     // Verify user owns this meter or is admin
-    if (req.user.role !== 'admin' && dev.assigned_user_id !== req.user.id) {
+    if (req.user.role !== 'admin' && !isUserAuthorizedForDevice(dev, req.user.id)) {
       return res.status(403).json({ error: 'Unauthorized to recharge this meter' });
     }
 
@@ -796,7 +815,7 @@ app.get('/api/meters/:id/recharges', verifyToken, async (req, res) => {
   try {
     const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
     if (devQuery.rows.length === 0) return res.status(404).json({ error: 'Device not found' });
-    if (req.user.role !== 'admin' && devQuery.rows[0].assigned_user_id !== req.user.id) {
+    if (req.user.role !== 'admin' && !isUserAuthorizedForDevice(devQuery.rows[0], req.user.id)) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
@@ -1188,12 +1207,20 @@ app.post('/api/admin/meters/:id/reset-all', verifyToken, requireAdmin, async (re
 
 // Register new device
 app.post('/api/admin/devices', verifyToken, requireAdmin, async (req, res) => {
-  const { id, name, apiKey, assignedUserId, unitPrice, rechargeAmount, allowedUnits } = req.body;
+  const { id, name, apiKey, assignedUserId, assignedUserIds, unitPrice, rechargeAmount, allowedUnits } = req.body;
   if (!id || !apiKey) {
     return res.status(400).json({ error: 'Device ID and API Key are required' });
   }
 
   try {
+    let userIds = [];
+    if (Array.isArray(assignedUserIds)) {
+      userIds = assignedUserIds.map(Number).filter(n => !isNaN(n) && n > 0);
+    } else if (assignedUserId) {
+      userIds = [parseInt(assignedUserId)];
+    }
+    const primaryUserId = userIds[0] || null;
+
     const initialRecharge = rechargeAmount !== undefined ? parseFloat(rechargeAmount) : (allowedUnits ? parseFloat(allowedUnits) * 8.5 : 1000.0);
     const result = await db.query(
       `INSERT INTO devices (id, name, api_key, assigned_user_id, unit_price, recharge_amount, allowed_units)
@@ -1203,12 +1230,19 @@ app.post('/api/admin/devices', verifyToken, requireAdmin, async (req, res) => {
         id.trim(),
         name || 'PZEM Smart Meter',
         apiKey.trim(),
-        assignedUserId ? parseInt(assignedUserId) : null,
+        primaryUserId,
         unitPrice ? parseFloat(unitPrice) : 8.50,
         initialRecharge,
         allowedUnits ? parseFloat(allowedUnits) : 100.00
       ]
     );
+
+    if (userIds.length > 0) {
+      await db.query(
+        `UPDATE devices SET assigned_user_ids = $1 WHERE id = $2`,
+        [JSON.stringify(userIds), id.trim()]
+      );
+    }
 
     res.status(201).json({ device: result.rows[0] });
   } catch (err) {
@@ -1217,13 +1251,136 @@ app.post('/api/admin/devices', verifyToken, requireAdmin, async (req, res) => {
   }
 });
 
-// Reassign device
-app.put('/api/admin/devices/:id/assign', verifyToken, requireAdmin, async (req, res) => {
-  const { userId } = req.body;
+// Full Edit of Device (Admin Only) - Edit whole meter data & assign across multiple people
+app.put('/api/admin/devices/:id', verifyToken, requireAdmin, async (req, res) => {
+  const deviceId = req.params.id;
+  const {
+    name,
+    apiKey,
+    assignedUserIds,
+    assignedUserId,
+    unitPrice,
+    rechargeAmount,
+    overdueAmount,
+    paidAmount,
+    allowedUnits,
+    isActive
+  } = req.body;
+
   try {
+    const devQuery = await db.query('SELECT * FROM devices WHERE id = $1', [deviceId]);
+    if (devQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+    const currentDevice = devQuery.rows[0];
+
+    // Normalize assigned consumers array
+    let userIds = [];
+    if (Array.isArray(assignedUserIds)) {
+      userIds = assignedUserIds.map(Number).filter(n => !isNaN(n) && n > 0);
+    } else if (assignedUserId) {
+      userIds = [parseInt(assignedUserId)];
+    } else if (assignedUserIds !== undefined && assignedUserIds !== null) {
+      try {
+        const parsed = JSON.parse(assignedUserIds);
+        if (Array.isArray(parsed)) userIds = parsed.map(Number);
+      } catch {
+        userIds = String(assignedUserIds).split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+      }
+    } else {
+      userIds = currentDevice.assigned_user_ids || (currentDevice.assigned_user_id ? [currentDevice.assigned_user_id] : []);
+    }
+    userIds = Array.from(new Set(userIds));
+    const primaryUserId = userIds.length > 0 ? userIds[0] : null;
+
+    const newName = name !== undefined && name !== null ? String(name).trim() : currentDevice.name;
+    const newApiKey = apiKey !== undefined && apiKey !== null ? String(apiKey).trim() : currentDevice.api_key;
+    const newUnitPrice = unitPrice !== undefined && unitPrice !== '' ? parseFloat(unitPrice) : parseFloat(currentDevice.unit_price);
+    const newRecharge = rechargeAmount !== undefined && rechargeAmount !== '' ? parseFloat(rechargeAmount) : parseFloat(currentDevice.recharge_amount || 0);
+    const newOverdue = overdueAmount !== undefined && overdueAmount !== '' ? parseFloat(overdueAmount) : parseFloat(currentDevice.overdue_amount || 0);
+    const newPaid = paidAmount !== undefined && paidAmount !== '' ? parseFloat(paidAmount) : parseFloat(currentDevice.paid_amount || 0);
+    const newAllowedUnits = allowedUnits !== undefined && allowedUnits !== '' ? parseFloat(allowedUnits) : parseFloat(currentDevice.allowed_units || 100);
+    const newIsActive = isActive !== undefined ? Boolean(isActive) : (currentDevice.is_active !== undefined ? Boolean(currentDevice.is_active) : true);
+
     const result = await db.query(
-      'UPDATE devices SET assigned_user_id = $1 WHERE id = $2 RETURNING *',
-      [userId ? parseInt(userId) : null, req.params.id]
+      `UPDATE devices SET
+        name = $1,
+        api_key = $2,
+        assigned_user_id = $3,
+        assigned_user_ids = $4,
+        unit_price = $5,
+        recharge_amount = $6,
+        overdue_amount = $7,
+        paid_amount = $8,
+        allowed_units = $9,
+        is_active = $10
+       WHERE id = $11
+       RETURNING *`,
+      [
+        newName,
+        newApiKey,
+        primaryUserId,
+        JSON.stringify(userIds),
+        newUnitPrice,
+        newRecharge,
+        newOverdue,
+        newPaid,
+        newAllowedUnits,
+        newIsActive,
+        deviceId
+      ]
+    );
+
+    // Sync to junction table device_users if Postgres
+    try {
+      await db.query('DELETE FROM device_users WHERE device_id = $1', [deviceId]);
+      for (const uid of userIds) {
+        await db.query('INSERT INTO device_users (device_id, user_id) VALUES ($1, $2)', [deviceId, uid]);
+      }
+    } catch (e) {
+      // Junction table optional
+    }
+
+    // Record billing record audit if balance or price adjusted
+    if (newRecharge !== parseFloat(currentDevice.recharge_amount || 0) || newUnitPrice !== parseFloat(currentDevice.unit_price)) {
+      await db.query(
+        `INSERT INTO billing_records (device_id, overdue_amount, paid_amount, unit_price_applied, notes)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          deviceId,
+          newOverdue,
+          newRecharge,
+          newUnitPrice,
+          `Admin edited meter: Quota ₹${newRecharge.toFixed(2)}, Rate ₹${newUnitPrice.toFixed(2)}/kWh, Assigned Users: [${userIds.join(', ')}]`
+        ]
+      );
+    }
+
+    // Trigger instant sync to ESP32 local IP if online
+    if (currentDevice.local_ip) {
+      fetch(`http://${currentDevice.local_ip}/sync-now`, { method: 'POST', signal: AbortSignal.timeout(2500) }).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: `Meter ${deviceId} updated successfully with ${userIds.length} assigned consumer(s).`,
+      device: result.rows[0]
+    });
+  } catch (err) {
+    console.error('Error updating complete device:', err);
+    res.status(500).json({ error: 'Failed to update device: ' + (err.message || 'Server error') });
+  }
+});
+
+// Reassign device (legacy support)
+app.put('/api/admin/devices/:id/assign', verifyToken, requireAdmin, async (req, res) => {
+  const { userId, userIds } = req.body;
+  try {
+    const finalIds = Array.isArray(userIds) ? userIds.map(Number) : (userId ? [parseInt(userId)] : []);
+    const primary = finalIds[0] || null;
+    const result = await db.query(
+      'UPDATE devices SET assigned_user_id = $1, assigned_user_ids = $2 WHERE id = $3 RETURNING *',
+      [primary, JSON.stringify(finalIds), req.params.id]
     );
     res.json({ device: result.rows[0] });
   } catch (err) {

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name VARCHAR(100) NOT NULL DEFAULT 'Smart Power Meter',
     api_key VARCHAR(100) NOT NULL, -- Device secret used by ESP32 to authenticate
     assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_user_ids TEXT DEFAULT '[]', -- JSON array of multiple assigned user IDs: e.g. "[1, 2]"
     unit_price NUMERIC(8,2) DEFAULT 8.50,
     allowed_units NUMERIC(10,3) DEFAULT 100.00,
     recharge_amount NUMERIC(10,2) DEFAULT 1000.00, -- Prepaid funds credited
@@ -32,6 +33,14 @@ CREATE TABLE IF NOT EXISTS devices (
     last_online_at TIMESTAMP WITH TIME ZONE,
     last_offline_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Junction table for multiple consumers assigned to a meter
+CREATE TABLE IF NOT EXISTS device_users (
+    device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (device_id, user_id)
 );
 
 -- 3. Telemetry Table (Time-Series Energy Data from ESP32)

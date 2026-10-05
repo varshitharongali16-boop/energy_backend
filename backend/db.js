@@ -60,6 +60,7 @@ async function seedMemoryDatabase() {
       name: 'Living Room PZEM Meter',
       api_key: 'meter_secret_key_123',
       assigned_user_id: 2,
+      assigned_user_ids: [2],
       unit_price: 12.00,
       allowed_units: 100.0,
       recharge_amount: 1000.00,
@@ -217,36 +218,61 @@ async function executeMemoryQuery(text, params = []) {
     return { rows: [] };
   }
 
+  // Helper to normalize assigned user IDs
+  function normalizeUserIds(assignedUserIds, assignedUserId) {
+    let ids = [];
+    if (Array.isArray(assignedUserIds)) {
+      ids = assignedUserIds.map(Number);
+    } else if (typeof assignedUserIds === 'string') {
+      try {
+        const parsed = JSON.parse(assignedUserIds);
+        if (Array.isArray(parsed)) ids = parsed.map(Number);
+      } catch {
+        ids = assignedUserIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+      }
+    }
+    if (assignedUserId && !ids.includes(Number(assignedUserId))) {
+      ids.push(Number(assignedUserId));
+    }
+    return Array.from(new Set(ids.filter(id => !isNaN(id) && id > 0)));
+  }
+
+  // Helper to format device with rich assigned users array and usernames string
+  function formatDeviceWithUsers(d) {
+    if (!d) return null;
+    const ids = normalizeUserIds(d.assigned_user_ids, d.assigned_user_id);
+    const assignedUsers = memDb.users
+      .filter(u => ids.includes(u.id))
+      .map(u => ({ id: u.id, username: u.username, email: u.email, role: u.role }));
+    const usernames = assignedUsers.map(u => u.username).join(', ');
+    const emails = assignedUsers.map(u => u.email).join(', ');
+    return {
+      ...d,
+      assigned_user_id: ids[0] || null,
+      assigned_user_ids: ids,
+      assigned_users: assignedUsers,
+      assigned_username: usernames || null,
+      assigned_email: emails || null
+    };
+  }
+
   // 3. Devices Table Queries
   if (lower.startsWith('select') && lower.includes('from devices')) {
     if (lower.includes('where d.id =') || lower.includes('where id =')) {
       const devId = params[0];
       const d = memDb.devices.find(x => x.id === devId);
       if (!d) return { rows: [] };
-      const assignedUser = memDb.users.find(u => u.id === d.assigned_user_id);
-      return {
-        rows: [{
-          ...d,
-          assigned_username: assignedUser ? assignedUser.username : null,
-          assigned_email: assignedUser ? assignedUser.email : null
-        }]
-      };
+      return { rows: [formatDeviceWithUsers(d)] };
     }
-    if (lower.includes('where assigned_user_id =') || lower.includes('where d.assigned_user_id =')) {
+    if (lower.includes('where assigned_user_id =') || lower.includes('where d.assigned_user_id =') || lower.includes('assigned_user_ids')) {
       const uid = parseInt(params[0]);
-      const list = memDb.devices.filter(d => d.assigned_user_id === uid);
+      const list = memDb.devices
+        .filter(d => normalizeUserIds(d.assigned_user_ids, d.assigned_user_id).includes(uid))
+        .map(formatDeviceWithUsers);
       return { rows: list };
     }
     // List all devices with user joins
-    const allDevs = memDb.devices.map(d => {
-      const assignedUser = memDb.users.find(u => u.id === d.assigned_user_id);
-      return {
-        ...d,
-        assigned_username: assignedUser ? assignedUser.username : null,
-        assigned_email: assignedUser ? assignedUser.email : null
-      };
-    });
-    return { rows: allDevs };
+    return { rows: memDb.devices.map(formatDeviceWithUsers) };
   }
 
   if (lower.startsWith('update devices')) {
@@ -260,30 +286,62 @@ async function executeMemoryQuery(text, params = []) {
     }
 
     if (targetDev) {
-      if (lower.includes('recharge_amount =')) {
-        // e.g. top-up or recharge update
-        if (typeof params[0] === 'number') targetDev.recharge_amount = params[0];
-        if (typeof params[1] === 'number') targetDev.overdue_amount = params[1];
+      const setMatch = text.match(/SET\s+([\s\S]+?)\s+WHERE/i);
+      if (setMatch) {
+        const setClauses = setMatch[1].split(',').map(s => s.trim());
+        setClauses.forEach((clause) => {
+          const m = clause.match(/^([a-zA-Z0-9_]+)\s*=\s*(?:\$(\d+)|([^\$].*))$/);
+          if (m) {
+            const col = m[1].toLowerCase();
+            const paramIdx = m[2] ? parseInt(m[2]) - 1 : null;
+            const val = paramIdx !== null ? params[paramIdx] : (m[3] ? m[3].trim().replace(/^'|'$/g, '') : null);
+
+            if (col === 'assigned_user_ids') {
+              let ids = [];
+              if (Array.isArray(val)) ids = val.map(Number);
+              else if (typeof val === 'string') {
+                try { ids = JSON.parse(val); } catch { ids = val.split(',').map(Number); }
+              }
+              targetDev.assigned_user_ids = ids.filter(n => !isNaN(n) && n > 0);
+              if (targetDev.assigned_user_ids.length > 0) {
+                targetDev.assigned_user_id = targetDev.assigned_user_ids[0];
+              }
+            } else if (col === 'assigned_user_id') {
+              const parsedId = val ? parseInt(val) : null;
+              targetDev.assigned_user_id = parsedId;
+              if (parsedId) {
+                targetDev.assigned_user_ids = targetDev.assigned_user_ids || [];
+                if (!targetDev.assigned_user_ids.includes(parsedId)) {
+                  targetDev.assigned_user_ids.push(parsedId);
+                }
+              }
+            } else if (['unit_price', 'recharge_amount', 'overdue_amount', 'paid_amount', 'allowed_units', 'locked_billed_cost', 'locked_billed_energy'].includes(col)) {
+              targetDev[col] = parseFloat(val) || 0;
+            } else if (col === 'is_active' || col === 'needs_reset') {
+              targetDev[col] = Boolean(val);
+            } else if (col === 'last_seen' || col === 'last_online_at' || col === 'last_offline_at') {
+              targetDev[col] = new Date();
+            } else {
+              targetDev[col] = val;
+            }
+          }
+        });
       }
-      if (lower.includes('unit_price =')) {
-        targetDev.unit_price = params[0];
-      }
-      if (lower.includes('last_seen =')) {
-        targetDev.last_seen = new Date();
-      }
-      return { rows: [targetDev] };
+      return { rows: [formatDeviceWithUsers(targetDev)] };
     }
     return { rows: [] };
   }
 
   if (lower.startsWith('insert into devices')) {
+    const rawIds = params[3] ? [parseInt(params[3])] : [];
     const newDev = {
       id: params[0],
       name: params[1] || 'Smart Meter',
       api_key: params[2],
-      assigned_user_id: params[3] ? parseInt(params[3]) : null,
+      assigned_user_id: rawIds[0] || null,
+      assigned_user_ids: rawIds,
       unit_price: parseFloat(params[4] || 8.50),
-      allowed_units: 100.0,
+      allowed_units: parseFloat(params[6] || 100.0),
       recharge_amount: parseFloat(params[5] || 1000.00),
       overdue_amount: 0.00,
       paid_amount: 0.00,
@@ -295,7 +353,7 @@ async function executeMemoryQuery(text, params = []) {
       created_at: new Date()
     };
     memDb.devices.push(newDev);
-    return { rows: [newDev] };
+    return { rows: [formatDeviceWithUsers(newDev)] };
   }
 
   if (lower.startsWith('delete from devices')) {
@@ -529,6 +587,14 @@ async function initDatabase() {
         ALTER TABLE devices ADD COLUMN IF NOT EXISTS local_ip VARCHAR(50);
         ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_online_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_offline_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE devices ADD COLUMN IF NOT EXISTS assigned_user_ids TEXT DEFAULT '[]';
+
+        CREATE TABLE IF NOT EXISTS device_users (
+          device_id VARCHAR(50) NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (device_id, user_id)
+        );
 
         CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at DESC);
         CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(assigned_user_id);
