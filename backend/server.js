@@ -699,16 +699,12 @@ app.post('/api/payments/create-order', verifyToken, async (req, res) => {
     try {
       order = await razorpay.orders.create(options);
     } catch (rzpErr) {
-      console.warn('[Razorpay] Live order creation warning:', rzpErr?.error?.description || rzpErr?.message);
-      order = {
-        id: `order_test_${Date.now()}`,
-        entity: 'order',
-        amount: Math.round(amt * 100),
-        currency: 'INR',
-        receipt: orderReceipt,
-        status: 'created',
-        notes: options.notes
-      };
+      const errMsg = rzpErr?.error?.description || rzpErr?.message || 'Authentication failed';
+      console.warn('[Razorpay] Order creation failed:', errMsg);
+      return res.status(400).json({
+        error: `Razorpay Error: ${errMsg}. Please verify that the Key Secret matches Key ID ${RAZORPAY_KEY_ID} in Razorpay Dashboard > API Keys.`,
+        details: rzpErr?.error
+      });
     }
 
     res.json({

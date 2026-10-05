@@ -195,23 +195,26 @@ export default function Dashboard({ user, onLogout, onSwitchToAdmin, onSwitchToL
         return;
       }
 
-      // Fetch public Razorpay Key from backend (or fallback to configured key)
-      let keyId = 'rzp_test_TKTk2IuoVuHf8v';
-      try {
-        const cfgRes = await fetchApi('/api/payments/config');
-        if (cfgRes.ok) {
-          const cfg = await cfgRes.json();
-          if (cfg.keyId) keyId = cfg.keyId;
-        }
-      } catch (e) {}
+      // Step 1: Request verified order from server
+      const orderRes = await fetchApi('/api/payments/create-order', {
+        method: 'POST',
+        body: JSON.stringify({ meterId: selectedMeterId, amount: amt })
+      });
+      const orderData = await orderRes.json();
+      if (!orderRes.ok) {
+        showToast(orderData.error || 'Failed to initialize payment order');
+        setRechargeLoading(false);
+        return;
+      }
 
-      // Razorpay Standard Checkout Options (Direct Native Payment Window)
+      // Step 2: Open official Razorpay Checkout Window
       const options = {
-        key: keyId,
-        amount: Math.round(amt * 100), // in paise
-        currency: 'INR',
+        key: orderData.keyId || 'rzp_test_TKTk2IuoVuHf8v',
+        amount: orderData.order.amount,
+        currency: orderData.order.currency || 'INR',
         name: 'Voltronix Energy',
         description: `Prepaid Recharge for ${deviceInfo?.name || selectedMeterId}`,
+        order_id: orderData.order.id,
         handler: async function (response) {
           try {
             showToast('Payment successful! Crediting meter balance...');
